@@ -1,0 +1,8 @@
+*.ipynb_checkpoints
+*.pyc
+**.pyc
+**/data/Features
+**/data/Market
+**/data/Rewards
+
+.DS_Store
