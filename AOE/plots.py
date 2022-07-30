@@ -62,6 +62,8 @@ def rescale_plot(W=2.5):
         )
     })
 
+
+
 def hit_ratio_analysis(_historical_strats, _bandits, _historical_oracle_strats, _W = 5.5):
     bandit_k = list(_bandits.keys())[0]
     nb_bandits = len(_bandits.keys())
@@ -80,6 +82,8 @@ def hit_ratio_analysis(_historical_strats, _bandits, _historical_oracle_strats, 
         ax.legend([_bandit_k, 'Oracle'])
 
     plt.tight_layout()
+
+
 
 
 def reward_distribution_analysis(bandit_name, bandits, period_est, LOB_features, rewards_to_plot, historical_reward_times, 
@@ -141,48 +145,9 @@ def reward_distribution_analysis(bandit_name, bandits, period_est, LOB_features,
     plt.show()
     
 
-def regret_plots(strategies, historical_reward_times, regrets_to_plot, LOB_features, bandits, W=5.5):
-    rescale_plot(W=W)
-    fig, (ax0, ax2) = plt.subplots(2, 1, sharex=True)
 
-    # Prices
-    sub_mid_prices = LOB_features.mid_price
-    sub_mid_prices = sub_mid_prices[((sub_mid_prices.index<=historical_reward_times[-1]) & 
-                                     (sub_mid_prices.index>=historical_reward_times[0]))]
 
-    price_time_index = np.linspace(0, 1, len(sub_mid_prices)) #sub_mid_prices.index
-    time_index       = np.linspace(0, 1, len(regrets_to_plot)) #sub_mid_prices.index
 
-    ax0.plot(price_time_index, sub_mid_prices.values, color='k')
-
-    for (bandit_k, clrr) in zip( bandits.keys(), ('tan', 'grey', 'pink')):
-        ax2.plot(time_index, regrets_to_plot[bandit_k].cumsum(), color=clrr)
-
-    for (strat, clrr) in zip(strategies.keys(), ('k', 'b', 'g')):
-        ax2.plot(time_index, regrets_to_plot[strat].cumsum(), color=clrr)
-
-    ax2.legend(list(bandits.keys()) +  list(strategies.keys()))
-
-    for ax in (ax0, ax2):
-        ax.grid(axis='both', color='gainsboro', linestyle='-', linewidth=0.5)
-        ax.yaxis.tick_right()
-
-    ax0.yaxis.set_major_formatter('\${x:,.2f}')
-    ax2.yaxis.set_major_formatter('{x:,.2f}\%')
-
-    ax0.set_ylabel('prices')
-    ax2.set_ylabel('Regret')
-
-    ax2.tick_params(axis='x', rotation=90)
-
-    plt.tight_layout()
-
-    ax0.set_ylabel('prices')
-    ax2.set_ylabel('Regret')
-
-    ax2.tick_params(axis='x', rotation=90)
-
-    plt.tight_layout()
 
 def regret_plots(strategies, historical_reward_times, regrets_to_plot, LOB_features, bandits, W=5.5, figure_name = None):
     rescale_plot(W=W)
@@ -225,6 +190,9 @@ def regret_plots(strategies, historical_reward_times, regrets_to_plot, LOB_featu
         plt.savefig(figure_name, bbox_inches='tight')
         
     plt.show()
+
+
+
 
 def analyze_meta_order(meta_order_id, tape_meta_orders, W=7.8, figure_name = None):
 
