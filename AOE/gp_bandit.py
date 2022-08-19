@@ -174,7 +174,7 @@ class gp_bandit:
 
         return the_draw
 
-    def plot_fit_strat(self, strat, lv=-1, uv=1, xlabel=None, plot_path=None):
+    def plot_fit_strat(self, strat, lv=-3, uv=3, xlabel=None, plot_path=None):
         """Plot the fit for sanity check"""
         
         # Get model and predictions
@@ -196,14 +196,16 @@ class gp_bandit:
         ax.plot(train_x.numpy(), train_y.numpy(), 'k*')
         # Plot predictive means as blue line
         ax.plot(test_x.numpy(), observed_pred.mean.numpy(), 'b')
+        print("test_x:", test_x.numpy())
+        print("observed_pred:", observed_pred.mean.numpy())
         # Shade between the lower and upper confidence bounds
         ax.fill_between(test_x.detach().numpy(), lower.detach().numpy(), upper.detach().numpy(), alpha=0.5)
         # ax.set_ylim([-3, 3])
         ax.legend(['Rewards', 'Mean', 'Confidence'])
         ax.grid(axis='both', color='gainsboro', linestyle='-', linewidth=0.5)
-        ax.yaxis.set_label_position("right")
-        ax.yaxis.tick_right()
-        ax.yaxis.set_major_formatter('{x:,.2f}\%')
+        #ax.yaxis.set_label_position("right")
+        #ax.yaxis.tick_right()
+        #ax.yaxis.set_major_formatter('{x:,.2f}\%')
         
         if xlabel:
             ax.set_xlabel(xlabel)
@@ -211,13 +213,13 @@ class gp_bandit:
         if plot_path is not None:
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
 
-    def plot_fit_all(self, lv=-1, uv=1, plot_path=None, W=9):
+    def plot_fit_all(self, lv=-3, uv=3, plot_path=None, W=9):
         """Plot the fit of all strategies for sanity check"""
         
         nb_strategies = len(self.strategies.keys())
 
-        rescale_plot(W=W)
-        f, axs = plt.subplots(int(nb_strategies/2)+1, 2)
+        #rescale_plot(W=W)
+        f, axs = plt.subplots(1, nb_strategies, figsize=(20,7))
         
         for ((index, strat), ax) in zip(enumerate(self.strategies.keys()), np.ndarray.flatten(axs)):
             
@@ -245,9 +247,9 @@ class gp_bandit:
             ax.fill_between(test_x.numpy(), lower.numpy(), upper.numpy(), alpha=0.5)
             ax.legend(['Observed Data', 'Mean', 'Confidence'])
             ax.set_title(strat)
-            ax.tick_params(axis='x', rotation=90)
+            #ax.tick_params(axis='x', rotation=90)
 
-        plt.tight_layout()
+        #plt.tight_layout()
         
         if plot_path is not None:
             plt.savefig(plot_path, dpi=150)
@@ -300,6 +302,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
         self.reward_observation_times += [reward_time]
         
         if (reward_time - self.reward_observation_times[0])/ np.timedelta64(1, 's') > self.size_buffer:
+        #if (reward_time - self.reward_observation_times[0]) > self.size_buffer:
             if self.verbose: print('I added a reward observed at', reward_time, 'and deleting reward observed at',self.reward_observation_times[0])
             x_train = x_train[1:-1]
             y_train = y_train[1:-1]
