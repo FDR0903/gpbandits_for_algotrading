@@ -1,6 +1,7 @@
 from AOE.utils import verbose_print
 from AOE.optimal_trading import execute_strategy
 from AOE.stats import get_meta_order_details
+import scipy
 import numpy as np
 
 def update_reward_variables(order_arrival_time,  
@@ -148,14 +149,6 @@ def update_pending_rewards(pending_int_rewards, pending_rewards,
                                                           'oracle_reward'      : best_oracle_reward,
                                                           'order_arrival_time' : order_arrival_time,
                                                           'all_strat_rewards'  : all_strats_rewards}
-
-
-           
-    
-
-    
-
-
 
 
 
