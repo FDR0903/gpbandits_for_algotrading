@@ -1,5 +1,3 @@
-from email.policy import strict
-import math
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import torch
@@ -9,6 +7,7 @@ import scipy
 import numpy as np
 import matplotlib.pyplot as plt
 from .plots import rescale_plot
+from copy import deepcopy
 
 class gp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 
@@ -38,7 +37,8 @@ class gp_bandit_finance:
                                                     train_x,
                                                     train_y,
                                                     bandit_params = bandit_params,
-                                                    training_iter = training_iter)
+                                                    training_iter = training_iter,
+                                                    size_buffer = self.size_buffer)
 
     def select_best_strategy(self, features):
         if self.bandit_algo == 'UCB':
@@ -109,9 +109,10 @@ class gp_bandit_finance:
         #rescale_plot(W=W)
         f, axs = plt.subplots(1, nb_strategies, figsize=(7*nb_strategies,7))
         axs = np.array([axs])
-        for ((index, strat), ax) in zip(enumerate(strats), np.ndarray.flatten(axs)):
+        for ((_, strat), ax) in zip(enumerate(strats), np.ndarray.flatten(axs)):
             gp = self.strat_gp_dict[strat]
             ax = gp.build_plot(ax, lv=lv, uv=uv, n_test=100, xlabel=None)
+            ax.set_title(strat)
             # Get model and predictions
             #ax.tick_params(axis='x', rotation=90)
 
@@ -122,9 +123,10 @@ class gp_bandit_finance:
 
         plt.show()
 
-    def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=50):
+    def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None, likelihood = None, model = None):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
+        - nothing : reset to zero // parent:copy parent // specified: ok
         """
         gp = self.strat_gp_dict[strat]
         
@@ -133,21 +135,42 @@ class gp_bandit_finance:
 
         if train_y.shape[0] < self.size_window:
             return False
-
+        
         train_x_1 = train_x[(-self.size_window//2):]
         train_y_1 = train_y[(-self.size_window//2):]
         train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
         train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
-        
-        ### Posterior mean and covariance for each dataset
-        gp_1 = gp_bandit(gpytorch.likelihoods.GaussianLikelihood(),
-                        self.bandit_algo,
-                        train_x_1,
-                        train_y_1,
-                        bandit_params = self.bandit_params,
-                        training_iter = training_iter)
 
-        gp_1.train()
+        if likelihood == None:
+            likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        elif likelihood == "same":
+            likelihood = deepcopy(gp.model.likelihood)
+        
+        if model == None:
+            gp_1 = gp_bandit(likelihood,
+                            self.bandit_algo,
+                            train_x_1,
+                            train_y_1,
+                            bandit_params = self.bandit_params,
+                            training_iter = training_iter)
+
+            gp_2 = gp_bandit(likelihood,
+                self.bandit_algo,
+                train_x_2,
+                train_y_2,
+                bandit_params = self.bandit_params,
+                training_iter = training_iter)
+
+        elif model == "same":
+            gp_1 = deepcopy(gp)
+            gp_1.change_data(train_x_1, train_y_1)
+            gp_2 = deepcopy(gp)
+            gp_2.change_data(train_x_2, train_y_2)
+
+        
+        if training_iter != None:
+            gp_1.train()
+            gp_2.train()
 
         model, likelihood = gp_1.model, gp_1.model.likelihood
         model.eval()
@@ -158,16 +181,6 @@ class gp_bandit_finance:
         posterior_mean_1 = observed_pred.mean
         lower1, upper1 = observed_pred.confidence_region()
 
-        ### Second posterior distribution
-        gp_2 = gp_bandit(gpytorch.likelihoods.GaussianLikelihood(),
-                        self.bandit_algo,
-                        train_x_2,
-                        train_y_2,
-                        bandit_params = self.bandit_params,
-                        training_iter = training_iter)
-
-        gp_2.train()
-
         model, likelihood = gp_2.model, gp_2.model.likelihood
         model.eval()
         likelihood.eval()
@@ -177,9 +190,9 @@ class gp_bandit_finance:
         posterior_mean_2 = observed_pred.mean
         lower2, upper2 = observed_pred.confidence_region()
 
-        return posterior_mean_1, lower1, upper1, posterior_mean_2, lower2, upper2
+        return train_x_1, train_y_1, posterior_mean_1, lower1, upper1, train_x_2, train_y_2, posterior_mean_2, lower2, upper2
 
-    def posterior_sliding_window_covar(self, strat, n_test = 100, lv = -1, uv = 1):
+    def posterior_sliding_window_covar(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
         """
@@ -195,14 +208,18 @@ class gp_bandit_finance:
         train_y_1 = train_y[(-self.size_window//2):]
         train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
         train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
-        
+
+        if training_iter==None:
+            training_iter = self.training_iter
+
         ### Posterior mean and covariance for each dataset
         gp_1 = gp_bandit(gpytorch.likelihoods.GaussianLikelihood(),
                         self.bandit_algo,
                         train_x_1,
                         train_y_1,
                         bandit_params = self.bandit_params,
-                        training_iter = self.training_iter)
+                        training_iter = self.training_iter,
+                        verbose = self.verbose)
 
         gp_1.train()
 
@@ -221,7 +238,8 @@ class gp_bandit_finance:
                         train_x_2,
                         train_y_2,
                         bandit_params = self.bandit_params,
-                        training_iter = self.training_iter)
+                        training_iter = self.training_iter,
+                        verbose = self.verbose)
 
         gp_2.train()
 
@@ -236,7 +254,7 @@ class gp_bandit_finance:
 
         return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2
 
-    def change_point(self, strat, n_test = 100, lv = -1, uv = 1):
+    def change_point(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None):
         """Test for change point detection
 
         Args:
@@ -244,13 +262,37 @@ class gp_bandit_finance:
 
         Return:
             bool: whether chage point is detected
-        """        
-        posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = self.posterior_sliding_window_covar(strat, n_test, lv, uv)
+        """
+
+        result = self.posterior_sliding_window_covar(strat, n_test, lv, uv, training_iter)
+        if result != False:
+            posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = result
+        else:
+            return 0, False
 
         ### Compute wasserstein distance between gp:
         #distance_mean = (posterior_mean_1 - posterior_mean_2).pow(2).sum()
-        d = Wasserstein_GP(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
-        return (d > self.b)
+        d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
+        return d, d > self.b
+
+    def reinitialize_arm(self, strat=None, verbose=True):
+        if strat != None:
+            self.strat_gp_dict[strat] = gp_bandit(likelihood=gpytorch.likelihoods.GaussianLikelihood(),
+                                                    bandit_algo = self.bandit_algo,
+                                                    train_x = torch.zeros((0, 1), dtype=torch.float64),
+                                                    train_y = torch.zeros(0, dtype=torch.float64),
+                                                    bandit_params = self.bandit_params,
+                                                    training_iter = self.training_iter)
+        else:
+            for strat in self.strat_gp_dict.keys():
+                self.strat_gp_dict[strat] = gp_bandit(likelihood=gpytorch.likelihoods.GaussianLikelihood(),
+                                                        bandit_algo = self.bandit_algo,
+                                                        train_x = torch.zeros((0, 1), dtype=torch.float64),
+                                                        train_y = torch.zeros(0, dtype=torch.float64),
+                                                        bandit_params = self.bandit_params,
+                                                        training_iter = self.training_iter)
+        if verbose:
+            print("Regime change detected for strategy " + strat + ", corresponding arm reinitialized")
 
 class gp_bandit:
     def __init__(self, likelihood,
@@ -259,11 +301,11 @@ class gp_bandit:
                         train_y = torch.zeros(0, dtype=torch.float64),
                         bandit_params=0.1,
                         training_iter=10,
-                        verbose = False):
-        self.model = ExactGPModel(train_x, train_y, likelihood)
+                        verbose = False,
+                        size_buffer = None):
+        self.model = ExactGPModel(train_x, train_y, likelihood, size_buffer=size_buffer)
         
         self.training_iter = training_iter ## Number of epochs hyperparameter retraining
-        self.training_iter = 50 ## Number of epochs hyperparameter retraining
         self.bandit_algo   = bandit_algo
         self.bandit_params = bandit_params
         self.verbose       = verbose
@@ -488,21 +530,30 @@ class gp_bandit:
 
         Return:
             bool: whether chage point is detected
-        """        
-        posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = self.posterior_sliding_window(strat, n_test, lv, uv)
-
+        """
+        result = self.posterior_sliding_window(strat, n_test, lv, uv)
+        if result != False:
+            posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = result
+        else:
+            return 0, False
+        
         ### Compute wasserstein distance between gp:
-        #distance_mean = (posterior_mean_1 - posterior_mean_2).pow(2).sum()
-        d = Wasserstein_GP(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
-        return (d > self.b)
+        print("What am I doing here")
+        d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
+        return d, (d > self.b)
 
 # We will use the simplest form of GP model, exact inference
 class ExactGPModel(gpytorch.models.ExactGP):
-    def __init__(self, train_x, train_y, likelihood):
+    def __init__(self, train_x, train_y, likelihood, lengthscale=None, size_buffer=None):
 #         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module  = gpytorch.means.ConstantMean()
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+        self.size_buffer = size_buffer
+        if lengthscale==None:
+            self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+        else:
+            self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel().initialize(lengthscale=lengthscale))
+        #self.covar_module = gpytorch.kernels.RBFKernel()
         
         self.reward_observation_times = []
         
@@ -519,8 +570,13 @@ class ExactGPModel(gpytorch.models.ExactGP):
         y_train = self.train_targets
         x_train = torch.cat((x_train, torch.tensor([x_new]).reshape(1,1)))
         y_train = torch.cat((y_train, torch.tensor([y_new])))
-
-        self.set_train_data(x_train, y_train, strict=False)
+        if (self.size_buffer == None) or (y_train.size()[0] <= self.size_buffer):
+            self.set_train_data(x_train, y_train, strict=False)
+        elif y_train.size()[0] > self.size_buffer:
+            x_new = x_train[1:]
+            y_new = y_train[1:]
+            self.set_train_data(x_new, y_new, strict=False)
+            
 
 def Wasserstein_GP(mean1, cov1, mean2, cov2):
 
