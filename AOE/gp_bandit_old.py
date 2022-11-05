@@ -6,9 +6,8 @@ import torch
 import scipy
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.linalg import eigh
+from .plots import rescale_plot
 from copy import deepcopy
-
 
 class gp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 
@@ -20,21 +19,17 @@ class gp_bandit_finance:
                             verbose = False,
                             size_buffer = 100,
                             size_window = 10,
-                            size_subwindow = 5,
-                            type_1_error=0.05,
-                            threshold = 0.1):
+                            threshold=10):
 
         self.strategies = strategies
-        self.training_iter  = training_iter ## Number of epochs hyperparameter retraining
-        self.bandit_algo    = bandit_algo
-        self.bandit_params  = bandit_params
-        self.verbose        = verbose
-        self.size_buffer    = size_buffer
-        self.size_window    = size_window
-        self.size_subwindow = size_subwindow
-        self.type_1_error   = type_1_error ### Must be even to divide last points by two
-        self.type_1_error   = threshold
-
+        self.training_iter = training_iter ## Number of epochs hyperparameter retraining
+        self.bandit_algo   = bandit_algo
+        self.bandit_params = bandit_params
+        self.verbose       = verbose
+        self.size_buffer   = size_buffer
+        self.size_window   = size_window
+        self.b             = threshold ### Must be even to divide last points by two
+        
         self.strat_gp_dict = {}
         for strat in self.strategies.keys():
             self.strat_gp_dict[strat] = gp_bandit(likelihood,
@@ -127,7 +122,7 @@ class gp_bandit_finance:
             plt.savefig(plot_path, dpi=150)
 
         plt.show()
-    
+
     def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None, likelihood = None, model = None):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
@@ -260,7 +255,7 @@ class gp_bandit_finance:
         return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2
 
     def change_point(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None):
-        """Test for change point detection according to algorithm
+        """Test for change point detection
 
         Args:
             strat (str): strategy to test
@@ -268,75 +263,17 @@ class gp_bandit_finance:
         Return:
             bool: whether chage point is detected
         """
-        
-        # Compute corresponding type 2 error
-        # Compute Likelihood ratio test
-        # If ratio test big enough reinitialize
-        gp = self.strat_gp_dict[strat]
-        train_x, train_y = gp.model.train_inputs[0], gp.model.train_targets
-        if gp.model.train_inputs[0].shape[0] < self.size_window:
-            return False
-        
-        #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
-        S_1, S_2 = train_x[:self.size_subwindow], train_x[self.size_subwindow:self.size_window]
-        y_1, y_2 = train_y[:self.size_subwindow], train_y[self.size_subwindow:self.size_window]
 
-        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data(S_1, y_1)
-        likelihood, model = gp.model.likelihood, gp.model
-        model.eval()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            latent_f_tilde = model(S_2)
-            observed_pred = likelihood(latent_f_tilde)
-        mu_tilde, K_tilde = observed_pred.mean, observed_pred.covariance_matrix
+        result = self.posterior_sliding_window_covar(strat, n_test, lv, uv, training_iter)
+        if result != False:
+            posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = result
+        else:
+            return 0, False
 
-        # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data(S_2, y_2)
-        likelihood, model = gp.model.likelihood, gp.model
-        model.train()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            latent_f_star = model(S_2)
-            observed_pred = likelihood(latent_f_star)
-        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
-        mu, K = observed_pred.mean, observed_pred.covariance_matrix
-
-        # Compute delta Vh0 Vh1
-        v_h0 = K_tilde + (likelihood.noise**2)*torch.eye(self.size_subwindow)
-        v_h0_inv = torch.inverse(v_h0)
-        v_h1 = K + (likelihood.noise**2)*torch.eye(self.size_subwindow)
-        v_h1_inv = torch.inverse(v_h1)
-        delta = v_h1_inv - v_h0_inv
-        target_bis = y_2 - mu_tilde
-
-        # Compute test R:
-        R = -y_2 @ v_h1_inv @ y_2 - torch.log(torch.det(v_h1)) + target_bis @ v_h0_inv @ target_bis + torch.log(torch.det(v_h0))
-        
-        # Conpute Threshold based on type 1 error
-        aux = v_h0 @ delta
-        mu_h0 = torch.trace(aux)
-        sum_lambda_0 = torch.trace(aux @ aux)
-        largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_subwindow - 1, self.size_subwindow - 1))
-
-        tau_I = mu_h0 + max(torch.sqrt(-8*sum_lambda_0*np.log(self.type_1_error) + mu_tilde @ torch.inverse(v_h1) @ mu_tilde), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
-
-        # If test inferior, we already know there is no change
-        if R <= tau_I:
-            return False
-
-        #In case significant test compute equivalent second threshold
-        aux = v_h1 @ delta
-        mu_h1 = torch.trace(aux)
-        sum_lambda_1 = torch.trace(aux @ aux)
-        largest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_subwindow - 1, self.size_subwindow - 1))
-
-        error_II = max(torch.exp(-((mu_h1 - tau_I)**2)/(8*sum_lambda_1)), torch.exp(-((mu_h1 - tau_I)/(8*largest_eih1)))) # = lambda 2
-        
-        # Check if change worth taking
-        if error_II < self.threshold:
-            return True
-        
-        return False
-
+        ### Compute wasserstein distance between gp:
+        #distance_mean = (posterior_mean_1 - posterior_mean_2).pow(2).sum()
+        d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
+        return d, d > self.b
 
     def reinitialize_arm(self, strat=None, verbose=True):
         if strat != None:
@@ -584,6 +521,7 @@ class gp_bandit:
 
         return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2
 
+
     def change_point(self, strat, n_test = 100, lv = -1, uv = 1):
         """Test for change point detection
 
@@ -609,7 +547,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood, lengthscale=None, size_buffer=None):
 #         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-        self.mean_module  = gpytorch.means.ZeroMean()
+        self.mean_module  = gpytorch.means.ConstantMean()
         self.size_buffer = size_buffer
         if lengthscale==None:
             self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
@@ -676,33 +614,3 @@ def Wasserstein_GP_mean(mean1, cov1, mean2, cov2):
     d = np.real(l2norm + cov_dist/n)
 
     return d
-
-if __name__ == "__main__":
-    print("hello")
-
-    ### Do a test
-    strategies  = {'arm1' : {'contextual_params': {'feature_name'  : 'feature'}},
-               'arm2' : {'contextual_params': {'feature_name'  : 'feature'}}}
-
-    # Parameters bandit
-    size_buffer   = 100
-    size_window   = 16
-    size_subwindow   = 8
-    training_iter = 30
-    bandit_params = 0.1
-    type_1_error = 0.05
-    likelihood    = gpytorch.likelihoods.GaussianLikelihood()
-    bandit_algo   = 'TS'
-    threshold = 2*type_1_error
-    bandit = gp_bandit_finance(strategies, bandit_algo=bandit_algo, bandit_params=bandit_params, training_iter=training_iter, size_buffer=size_buffer, size_window=size_window, size_subwindow=size_subwindow, type_1_error=type_1_error, threshold = threshold)
-
-    function = lambda x: np.sin(2*np.pi*x)
-
-    x_train = np.linspace(0, 1, 30)
-    y_train = function(x_train)
-    x_train = x_train.reshape(-1,1)
-    y_train, x_train = torch.tensor(y_train), torch.tensor(x_train)
-
-    bandit.strat_gp_dict["arm1"].change_data(x_train, y_train)
-    change_point = bandit.change_point("arm1")
-
