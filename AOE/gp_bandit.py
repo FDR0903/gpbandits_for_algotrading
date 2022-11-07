@@ -33,7 +33,7 @@ class gp_bandit_finance:
         self.size_window    = size_window
         self.size_subwindow = size_subwindow
         self.type_1_error   = type_1_error ### Must be even to divide last points by two
-        self.type_1_error   = threshold
+        self.threshold   = threshold
 
         self.strat_gp_dict = {}
         for strat in self.strategies.keys():
@@ -128,6 +128,75 @@ class gp_bandit_finance:
 
         plt.show()
     
+    def posterior_S2(self, strat, lv=-1, uv=1, n_test=100):
+        """Return mean and confidence from posterior ever S1
+
+        Args:
+            strat (string): strategy
+
+        Return:
+            trainx, targety, mean, confidence
+        """
+
+        gp = self.strat_gp_dict[strat]
+        
+        train_x = gp.model.train_inputs[0]
+        train_y = gp.model.train_targets
+
+        if train_y.shape[0] < self.size_window:
+            return False
+
+        train_x_1, train_y_1 = train_x[(-self.size_window):(-self.size_subwindow)], train_y[(-self.size_window):(-self.size_subwindow)]
+
+        gp.change_data(train_x_1, train_y_1)
+
+        model, likelihood = gp.model, gp.model.likelihood
+        model.eval()
+        likelihood.eval()
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            test_x = torch.linspace(lv, uv, n_test).double()
+            observed_pred = likelihood(model(test_x))
+        posterior_mean_1 = observed_pred.mean
+        lower1, upper1 = observed_pred.confidence_region()
+
+        # Put back original dataset
+        gp.change_data(train_x, train_y)
+
+        return train_x_1, train_y_1, posterior_mean_1, lower1, upper1
+    
+    def prior_S2(self, strat, lv=-1, uv=1, n_test=100):
+        """Return mean and confidence from prior (hyperparameters are trained)
+
+        Args:
+            strat (string): strategy
+
+        Return:
+            trainx, targety, mean, confidence
+        """
+
+        gp = self.strat_gp_dict[strat]
+        
+        train_x = gp.model.train_inputs[0]
+        train_y = gp.model.train_targets
+
+        train_x_1, train_y_1 = train_x[(-self.size_subwindow):], train_y[(-self.size_subwindow):]
+
+
+        likelihood = gpytorch.likelihoods.GaussianLikelihood() 
+        model = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood)
+        model.eval()
+        
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            test_x = torch.linspace(lv, uv, n_test).double()
+            observed_pred = likelihood(model(test_x))
+        posterior_mean_1 = observed_pred.mean
+        lower1, upper1 = observed_pred.confidence_region()
+
+        return train_x_1, train_y_1, posterior_mean_1, lower1, upper1
+    
+    
+
+
     def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None, likelihood = None, model = None):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
@@ -141,10 +210,8 @@ class gp_bandit_finance:
         if train_y.shape[0] < self.size_window:
             return False
         
-        train_x_1 = train_x[(-self.size_window//2):]
-        train_y_1 = train_y[(-self.size_window//2):]
-        train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
-        train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
+        train_x_1, train_x_2 = train_x[(-self.size_window):(-self.size_subwindow)], train_x[(-self.size_subwindow):]
+        train_y_1, train_y_2 = train_y[(-self.size_window):(-self.size_subwindow)], train_y[(-self.size_subwindow):]
 
         if likelihood == None:
             likelihood = gpytorch.likelihoods.GaussianLikelihood()
@@ -260,7 +327,7 @@ class gp_bandit_finance:
         return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2
 
     def change_point(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=None):
-        """Test for change point detection according to algorithm
+        """Test for change point detection according to algorithm, compute all quantities
 
         Args:
             strat (str): strategy to test
@@ -278,8 +345,8 @@ class gp_bandit_finance:
             return False
         
         #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
-        S_1, S_2 = train_x[:self.size_subwindow], train_x[self.size_subwindow:self.size_window]
-        y_1, y_2 = train_y[:self.size_subwindow], train_y[self.size_subwindow:self.size_window]
+        S_1, S_2 = train_x[(-self.size_window):(-self.size_subwindow)], train_x[(-self.size_subwindow):]
+        y_1, y_2 = train_y[(-self.size_window):(-self.size_subwindow)], train_y[(-self.size_subwindow):]
 
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         gp.change_data(S_1, y_1)
@@ -289,53 +356,65 @@ class gp_bandit_finance:
             latent_f_tilde = model(S_2)
             observed_pred = likelihood(latent_f_tilde)
         mu_tilde, K_tilde = observed_pred.mean, observed_pred.covariance_matrix
+        v_h0 = K_tilde + (likelihood.noise**2)*torch.eye(self.size_subwindow)
+
 
         # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data(S_2, y_2)
-        likelihood, model = gp.model.likelihood, gp.model
-        model.train()
+        gp.change_data(train_x, train_y)
+
+        likelihood = gpytorch.likelihoods.GaussianLikelihood() 
+        model = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood)
+        model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             latent_f_star = model(S_2)
             observed_pred = likelihood(latent_f_star)
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         mu, K = observed_pred.mean, observed_pred.covariance_matrix
+        v_h1 = K + (likelihood.noise**2)*torch.eye(self.size_subwindow)
+
 
         # Compute delta Vh0 Vh1
-        v_h0 = K_tilde + (likelihood.noise**2)*torch.eye(self.size_subwindow)
         v_h0_inv = torch.inverse(v_h0)
-        v_h1 = K + (likelihood.noise**2)*torch.eye(self.size_subwindow)
         v_h1_inv = torch.inverse(v_h1)
         delta = v_h1_inv - v_h0_inv
         target_bis = y_2 - mu_tilde
 
         # Compute test R:
-        R = -y_2 @ v_h1_inv @ y_2 - torch.log(torch.det(v_h1)) + target_bis @ v_h0_inv @ target_bis + torch.log(torch.det(v_h0))
-        
+        #R = -y_2 @ v_h1_inv @ y_2 - torch.log(torch.det(v_h1)) + target_bis @ v_h0_inv @ target_bis + torch.log(torch.det(v_h0))
+        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis
+
         # Conpute Threshold based on type 1 error
         aux = v_h0 @ delta
-        mu_h0 = torch.trace(aux)
+        #mu_h0 = -torch.trace(aux) - mu_tilde @ (v_h0_inv + v_h1_inv) @ mu_tilde
+        mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
+        
         sum_lambda_0 = torch.trace(aux @ aux)
         largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_subwindow - 1, self.size_subwindow - 1))
+        smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
 
-        tau_I = mu_h0 + max(torch.sqrt(-8*sum_lambda_0*np.log(self.type_1_error) + mu_tilde @ torch.inverse(v_h1) @ mu_tilde), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
-
-        # If test inferior, we already know there is no change
-        if R <= tau_I:
-            return False
+        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.type_1_error)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
 
         #In case significant test compute equivalent second threshold
         aux = v_h1 @ delta
-        mu_h1 = torch.trace(aux)
+        #mu_h1 = -torch.trace(aux)
+        mu_h1 = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
         sum_lambda_1 = torch.trace(aux @ aux)
         largest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_subwindow - 1, self.size_subwindow - 1))
+        smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih1 = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
+        error_II = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2
 
-        error_II = max(torch.exp(-((mu_h1 - tau_I)**2)/(8*sum_lambda_1)), torch.exp(-((mu_h1 - tau_I)/(8*largest_eih1)))) # = lambda 2
+
+        # If test inferior, we already know there is no change
+        if R <= tau_I:
+            return False, R, tau_I, error_II
+
+        #elif error_II < self.threshold:
+            #return True, R, tau_I, error_II
         
-        # Check if change worth taking
-        if error_II < self.threshold:
-            return True
-        
-        return False
+        else:
+            return True, R, tau_I, error_II
 
 
     def reinitialize_arm(self, strat=None, verbose=True):
@@ -346,6 +425,9 @@ class gp_bandit_finance:
                                                     train_y = torch.zeros(0, dtype=torch.float64),
                                                     bandit_params = self.bandit_params,
                                                     training_iter = self.training_iter)
+            if verbose:
+                print("Regime change detected for strategy " + strat + ", corresponding arm reinitialized")
+                
         else:
             for strat in self.strat_gp_dict.keys():
                 self.strat_gp_dict[strat] = gp_bandit(likelihood=gpytorch.likelihoods.GaussianLikelihood(),
@@ -354,8 +436,8 @@ class gp_bandit_finance:
                                                         train_y = torch.zeros(0, dtype=torch.float64),
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
-        if verbose:
-            print("Regime change detected for strategy " + strat + ", corresponding arm reinitialized")
+            if verbose:
+                print("Regime change detected every arms are reinitialized")
 
 class gp_bandit:
     def __init__(self, likelihood,
@@ -704,5 +786,5 @@ if __name__ == "__main__":
     y_train, x_train = torch.tensor(y_train), torch.tensor(x_train)
 
     bandit.strat_gp_dict["arm1"].change_data(x_train, y_train)
-    change_point = bandit.change_point("arm1")
+    change_point = bandit.change_point_all("arm1")
 
