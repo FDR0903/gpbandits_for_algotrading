@@ -17,7 +17,8 @@ def execute_strategy(_strategy,
                      _order_id_c,
                      _meta_order_size,
                      _latency, 
-                     _historical_feature_data # For estimation of the signal OU dynamics at the beginning of the execution        
+                     _historical_feature_data ,# For estimation of the signal OU dynamics at the beginning of the execution        
+                     _tick_size
                     ):
     strategy_name = _strategy['name']
     _current_price = _historical_feature_data.loc[_t, 'mid_price']
@@ -54,11 +55,12 @@ def execute_strategy(_strategy,
             # Get market information
             feature_values = _historical_feature_data.loc[t_1, :]
             St             = _historical_feature_data.loc[t, 'mid_price']
-            bestbid        = _historical_feature_data.loc[t, 'bid_1']
-            bestask        = _historical_feature_data.loc[t, 'ask_1']
+            bestbid        = St - _tick_size
+            bestask        = St + _tick_size
             
             # Execute strategy algo to get the order      
-            o_order = o_meta_order.generate_strategy_order(_order_id_c, t, feature_values = feature_values)
+            o_order = o_meta_order.generate_strategy_order(_order_id_c, t, 
+                                                            feature_values = feature_values)
 
             if np.abs(o_order.quantity)>0:
                 # Execute at the future price

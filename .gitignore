@@ -1,8 +1,9 @@
 *.ipynb_checkpoints
 *.pyc
 **.pyc
-**/data/Features
+#**/data/Features
 **/data/Market
-**/data/Rewards
+#**/data/Rewards
+*.csv
 
 .DS_Store

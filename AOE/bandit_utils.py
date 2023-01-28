@@ -24,6 +24,43 @@ def update_reward_variables(order_arrival_time,
             
     return to_pops
 
+def fake_update_bandit_variables(pending_int_rewards, pending_rewards, bandits, bandit_k, 
+                            order_arrival_time,
+                            verbose_level,
+                            retrain_hyperparameters, historical_rewards, historical_strats,
+                            nb_added_rewards):
+    to_pops_int = []
+    # Add intermediate rewards but do not tape them
+    for pending_reward_time in pending_int_rewards[bandit_k].keys():
+        if order_arrival_time >= pending_reward_time:
+            verbose_print(verbose_level, order_arrival_time, f'Adding an intermediate reward for bandit {bandit_k} obtained at {pending_reward_time}', True)
+#            bandits[bandit_k].update_data(features  = pending_int_rewards[bandit_k][pending_reward_time]['features'], 
+#                                          strat     = pending_int_rewards[bandit_k][pending_reward_time]['strategy'], 
+#                                          reward    = pending_int_rewards[bandit_k][pending_reward_time]['reward'], #/10000 
+#                                          # reward_time = pending_int_rewards['TS'][pending_reward_time][5],
+#                                          retrain_hyperparameters = retrain_hyperparameters)
+            
+            nb_added_rewards[bandit_k]       += 1
+            to_pops_int += [pending_reward_time]
+    
+    to_pops = []
+    for pending_reward_time in pending_rewards[bandit_k].keys():
+        if order_arrival_time >= pending_reward_time:
+            verbose_print(verbose_level, order_arrival_time, f'Adding a final reward for bandit {bandit_k} obtained at {pending_reward_time}', True)
+
+#            bandits[bandit_k].update_data(features  = pending_rewards[bandit_k][pending_reward_time]['features'], 
+#                                          strat     = pending_rewards[bandit_k][pending_reward_time]['strategy'], 
+#                                          reward    = pending_rewards[bandit_k][pending_reward_time]['reward'], #/10000 
+#                                          # reward_time = pending_rewards['TS'][pending_reward_time][5],
+#                                          retrain_hyperparameters = retrain_hyperparameters)
+            
+            nb_added_rewards[bandit_k]       += 1
+            historical_rewards[bandit_k]     += [pending_rewards[bandit_k][pending_reward_time]['reward']] #/10000
+            historical_strats[bandit_k]      += [pending_rewards[bandit_k][pending_reward_time]['strategy']]
+            to_pops                          += [pending_reward_time]
+            
+    return to_pops_int, to_pops 
+
 
 def update_bandit_variables(pending_int_rewards, pending_rewards, bandits, bandit_k, 
                             order_arrival_time,
@@ -35,7 +72,7 @@ def update_bandit_variables(pending_int_rewards, pending_rewards, bandits, bandi
     for pending_reward_time in pending_int_rewards[bandit_k].keys():
         if order_arrival_time >= pending_reward_time:
             verbose_print(verbose_level, order_arrival_time, f'Adding an intermediate reward for bandit {bandit_k} obtained at {pending_reward_time}', True)
-            bandits[bandit_k].update_data(features  = pending_int_rewards[bandit_k][pending_reward_time]['features'], 
+            bandits[bandit_k].update_data_nst(features  = pending_int_rewards[bandit_k][pending_reward_time]['features'], 
                                           strat     = pending_int_rewards[bandit_k][pending_reward_time]['strategy'], 
                                           reward    = pending_int_rewards[bandit_k][pending_reward_time]['reward'], #/10000 
                                           # reward_time = pending_int_rewards['TS'][pending_reward_time][5],
@@ -49,7 +86,7 @@ def update_bandit_variables(pending_int_rewards, pending_rewards, bandits, bandi
         if order_arrival_time >= pending_reward_time:
             verbose_print(verbose_level, order_arrival_time, f'Adding a final reward for bandit {bandit_k} obtained at {pending_reward_time}', True)
 
-            bandits[bandit_k].update_data(features  = pending_rewards[bandit_k][pending_reward_time]['features'], 
+            bandits[bandit_k].update_data_nst(features  = pending_rewards[bandit_k][pending_reward_time]['features'], 
                                           strat     = pending_rewards[bandit_k][pending_reward_time]['strategy'], 
                                           reward    = pending_rewards[bandit_k][pending_reward_time]['reward'], #/10000 
                                           # reward_time = pending_rewards['TS'][pending_reward_time][5],
@@ -67,11 +104,11 @@ def pop_from_dict(dict_to_change, to_pops):
         dict_to_change.pop(to_pop)
         
 # def get_strategies_rewards():
-    
 def execute_and_obtain_rewards(tape_meta_orders,
                                order_id_c, meta_order_id_c, strategies, LOB_features, 
                                order_arrival_time, T, trading_frequency,
-                               meta_order_size, latency, trade_date, verbose_level, nb_intermediary_rewards):
+                               meta_order_size, latency, trade_date, verbose_level, nb_intermediary_rewards,
+                               tick_size):
     best_oracle_strategy  = list(strategies.keys())[0]
     best_oracle_reward    = None
     all_strats_rewards    = []
@@ -91,19 +128,23 @@ def execute_and_obtain_rewards(tape_meta_orders,
                                                                      _order_id_c        = order_id_c,
                                                                      _meta_order_size   = meta_order_size,
                                                                      _latency           = latency, 
-                                                                     _historical_feature_data = LOB_features)
+                                                                     _historical_feature_data = LOB_features,
+                                                                     _tick_size         = tick_size)
         tape_meta_orders.append(o_meta_order)
 
         verbose_print(verbose_level, order_arrival_time, f'Executed strategy {strat} between {order_arrival_time} and {trading_window_dates[-1]}')
 
         initial_wealth      = o_meta_order.initial_inventory*o_meta_order.S0
         order_df            = get_meta_order_details(o_meta_order, trade_date)
+
+        order_df['meta_order_pnl_minus_twap'] = order_df['meta_order_pnl'] - order_df['TWAP_pnl']
+
         reward_indices      = [int(ii) for ii in np.linspace(0, len(order_df)-1, nb_intermediary_rewards+1)]
         int_reward_times    = order_df.iloc[reward_indices[1:-1]]['execution_time'].values
-        int_rewards         = [100*rwd/initial_wealth for rwd in order_df.iloc[reward_indices[1:-1]]['meta_order_pnl'].values]
+        int_rewards         = [100*rwd/initial_wealth for rwd in order_df.iloc[reward_indices[1:-1]]['meta_order_pnl_minus_twap'].values]
 
         final_strat_reward_time   = trading_window_dates[-1] #order_df.iloc[-1]['execution_time'] # final reward of the strategy
-        final_strat_reward        = 100*order_df.iloc[-1]['meta_order_pnl']/initial_wealth # final reward of the strategy
+        final_strat_reward        = 100*order_df.iloc[-1]['meta_order_pnl_minus_twap']/initial_wealth # final reward of the strategy
 
         all_strats_rewards        += [final_strat_reward]
 
