@@ -1,14 +1,11 @@
 from email.policy import strict
-import math
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import torch
 import gpytorch
 import torch
-import scipy
-import numpy as np
-import matplotlib.pyplot as plt
 from .plots import rescale_plot
+from .gp_utils import Wasserstein_GP
 
 class gp_bandit:
     def __init__(self, likelihood,
@@ -20,7 +17,6 @@ class gp_bandit:
                         verbose = False):
         self.model = ExactGPModel(train_x, train_y, likelihood)
         self.training_iter = training_iter ## Number of epochs hyperparameter retraining
-        #self.training_iter = 50 ## Number of epochs hyperparameter retraining
         self.bandit_algo   = bandit_algo
         self.bandit_params = bandit_params
         self.verbose       = verbose

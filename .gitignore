@@ -5,5 +5,5 @@
 **/data/Market
 #**/data/Rewards
 *.csv
-
+/plot
 .DS_Store
