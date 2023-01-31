@@ -317,10 +317,12 @@ class gp_bandit_finance:
             if self.change_point_adaga(strat):
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
-                                                        train_x       = train_x[(-self.size_window):(- self.size_window//2)],
-                                                        train_y       = train_y[(-self.size_window):(- self.size_window//2)],
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
+
+                self.strat_gp_dict[strat].train()
 
         gp = self.strat_gp_dict[strat]
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
@@ -529,7 +531,7 @@ class gp_bandit_finance:
         if train_y.shape[0] < self.size_window:
             return False
         
-        ada = AdaptiveRegionalization_bandit(train_x, train_y, self.delta, self.size_window, n_ind_pts=self.size_window, kern="RBF")
+        ada = AdaptiveRegionalization_bandit(train_x, train_y, self.delta, self.size_window, n_ind_pts=10, kern="RBF")
         
         return ada.regionalize()
 
