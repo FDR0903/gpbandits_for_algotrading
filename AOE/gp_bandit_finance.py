@@ -236,8 +236,8 @@ class gp_bandit_finance:
                 # update the gp
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
-                                                        train_x       = train_x[(-self.size_window):(- self.size_window//2)],
-                                                        train_y       = train_y[(-self.size_window):(- self.size_window//2)],
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
 
@@ -292,8 +292,8 @@ class gp_bandit_finance:
 
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
-                                                        train_x       = train_x[(-self.size_window):(- self.size_window//2)],
-                                                        train_y       = train_y[(-self.size_window):(- self.size_window//2)],
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
 
@@ -345,8 +345,8 @@ class gp_bandit_finance:
                 # update the gp
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
-                                                        train_x       = train_x[(-self.size_window):(- self.size_window//2)],
-                                                        train_y       = train_y[(-self.size_window):(- self.size_window//2)],
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
 
