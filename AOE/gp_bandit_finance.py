@@ -5,7 +5,7 @@ from this import d
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import torch
 import gpytorch
-import torch
+import torch, random
 import numpy as np
 import matplotlib.pyplot as plt
 from .plots import rescale_plot
@@ -58,6 +58,7 @@ class gp_bandit_finance:
             self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.size_buffer   = self.bandit_params['size_buffer']
+
         
         self.strat_gp_dict = {}
         for strat in self.strategies.keys():
@@ -130,6 +131,10 @@ class gp_bandit_finance:
                 ucb_strat = self.compute_ucb_ada(strat, features)
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
+        elif self.bandit_algo == 'RANDOM':
+            "Compute ts for each gp and select best"
+            best_strat, best_ts = random.choice(list(self.strategies.keys())), -np.inf
+
         else:
             best_strat = 'NOT IMPLEMENTED'
             
@@ -259,7 +264,8 @@ class gp_bandit_finance:
             
             lv = train_x.min().item()
             uv = train_x.max().item()
-
+            
+            
             if self.change_point(strat, lv = lv, uv = uv):
                 # print('REGIME CHANGE UCB WAS !!!!!! for strategy:', strat)
                 
@@ -511,6 +517,10 @@ class gp_bandit_finance:
 
         if (posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2) == (None, None, None, None):
             return False
+
+        # if True:
+        #  HERE : plot both 
+
         ### Compute wasserstein distance between gp:
         #distance_mean = (posterior_mean_1 - posterior_mean_2).pow(2).sum()
         d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())

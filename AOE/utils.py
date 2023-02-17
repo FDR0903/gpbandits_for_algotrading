@@ -31,7 +31,7 @@ def get_LOB_data(data_path, asset_name, trade_date):
     try:
         LOB_data_path = os.path.join(data_path, asset_name, f'{asset_name}_{trade_date}_34200000_57600000_orderbook_5.csv')
         LOB_data      = pd.read_csv(LOB_data_path,
-                                    engine    = 'python',
+                                    engine    = 'c',
                                     index_col = None,
                                     header    = None,
                                     infer_datetime_format=True)
@@ -41,19 +41,19 @@ def get_LOB_data(data_path, asset_name, trade_date):
         LOB_data_path1 = os.path.join(data_path, asset_name, f'{asset_name}_{trade_date}_34200000_57600000_orderbook_5_part1.csv')
         LOB_data_path2 = os.path.join(data_path, asset_name, f'{asset_name}_{trade_date}_34200000_57600000_orderbook_5_part2.csv')
         LOB_data1      = pd.read_csv(LOB_data_path1,
-                                    engine    = 'python',
+                                    engine    = 'c',
                                     index_col = 0,
                                     header    = None,
                                     infer_datetime_format=True)
         LOB_data2      = pd.read_csv(LOB_data_path2,
-                                    engine    = 'python',
+                                    engine    = 'c',
                                     index_col = 0,
                                     header    = None,
                                     infer_datetime_format=True)
         LOB_data       = pd.concat((LOB_data1, LOB_data2.iloc[1:,:]))
 
     LOB_messages      = pd.read_csv(f'{data_path}/{asset_name}/{asset_name}_{trade_date}_34200000_57600000_message_5.csv', 
-                                    engine    = 'python',
+                                    engine    = 'c',
                                     index_col = 0,
                                     header    = None)
      

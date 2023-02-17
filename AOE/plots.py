@@ -45,22 +45,20 @@ def plot_meta_order(order_df, LOB_features, feature_name):
     ax4.yaxis.set_major_formatter('${x:,.0f}'); ax4.legend(['PnL', 'TWAP PNL'], fontsize=12)
 
     ax4.xaxis.set_major_formatter(md.DateFormatter('%H:%M:%S'))
-
-def rescale_plot(W=2.5):
-    # W = 2.5    # Figure width in inches, approximately A4-width - 2*1.25in margin
-
+    
+def rescale_plot(W=5, l=6, w=3, fontsize=10):
     plt.rcParams.update({
-        'figure.figsize': (W, W/(4/3)),     # 4:3 aspect ratio
-        'font.size' : 8,                   # Set font size to 11pt
-        'axes.labelsize': 8,               # -> axis labels
-        'legend.fontsize': 8,              # -> legends
-        'font.family': 'lmodern',
-        'text.usetex': True,
-        'text.latex.preamble': (            # LaTeX preamble
-            r'\usepackage{lmodern}'
-            # ... more packages if needed
-        )
-    })
+            'figure.figsize': (W, W/(l/w)),     # 6:3 aspect ratio
+            'font.size' : fontsize,                   # Set font size to 11pt
+            'axes.labelsize': fontsize,               # -> axis labels
+            'legend.fontsize': fontsize,              # -> legends
+            'font.family': 'lmodern',
+            'text.usetex': True,
+            'text.latex.preamble':             # LaTeX preamble
+                r"\usepackage{amssymb}\usepackage{lmodern}\usepackage{amsfonts}\usepackage{amsmath}"
+                # ... more packages if needed
+            
+        })
 
 
 
