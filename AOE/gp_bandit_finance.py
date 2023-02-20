@@ -2,6 +2,7 @@
 from email.policy import strict
 import os
 from this import d
+import scipy
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import torch
 import gpytorch
@@ -59,7 +60,20 @@ class gp_bandit_finance:
             self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.size_buffer   = self.bandit_params['size_buffer']
-
+        elif bandit_algo == 'MAB_UCB':
+            self.size_window   = self.bandit_params['size_window']
+            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.lamb          = self.bandit_params['lambda']
+            self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
+            for strat in self.strategies.keys():
+                self.strat_t[strat] = 0
+        elif bandit_algo == 'MAB_TS':
+            self.size_window   = self.bandit_params['size_window']
+            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.lamb          = self.bandit_params['lambda']
+            self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
+            for strat in self.strategies.keys():
+                self.strat_t[strat] = 0      
         
         self.strat_gp_dict = {}
         for strat in self.strategies.keys():
@@ -99,7 +113,7 @@ class gp_bandit_finance:
             "Compute ts for each gp and select best"
             best_strat, best_ts = "", -np.inf
             for strat in self.strategies.keys():
-                ts_strat = self.compute_ts(strat, features)
+                ts_strat = self.compute_ucb(strat, features)
                 if ts_strat > best_ts:
                     best_strat, best_ts = strat, ts_strat
 
@@ -136,10 +150,24 @@ class gp_bandit_finance:
         elif self.bandit_algo == 'RANDOM':
             "Compute ts for each gp and select best"
             best_strat, best_ts = random.choice(list(self.strategies.keys())), -np.inf
-
+        elif self.bandit_algo == 'MAB_UCB':
+            "Compute ucb for classical mab"
+            best_strat, best_ucb = "", -np.inf
+            for strat in self.strategies.keys():
+                self.strat_t[strat] += 1
+                ucb_strat = self.compute_ucb_mab(strat)
+                if ucb_strat > best_ucb:
+                    best_strat, best_ucb = strat, ucb_strat
+        elif self.bandit_algo == 'MAB_TS':
+            "Compute TS for classical mab"
+            best_strat, best_ucb = "", -np.inf
+            for strat in self.strategies.keys():
+                self.strat_t[strat] += 1
+                ucb_strat = self.compute_ts(strat, features)
+                if ucb_strat > best_ucb:
+                    best_strat, best_ucb = strat, ucb_strat
         else:
             best_strat = 'NOT IMPLEMENTED'
-            
         return best_strat
 
     def update_data(self, features, strat, reward, retrain_hyperparameters = False):
@@ -180,7 +208,12 @@ class gp_bandit_finance:
         elif self.bandit_algo == 'UCB_ADAGA':
             model.update_data(x_new, y_new)
             # model.update_data(x_new, y_new)
-
+        elif self.bandit_algo == 'MAB_UCB':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'MAB_TS':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
         else:
             best_strat = 'NOT IMPLEMENTED'
         
@@ -209,9 +242,7 @@ class gp_bandit_finance:
         if self.verbose: print('Computing UCB for strategy:', strat)
 
         gp = self.strat_gp_dict[strat]
-
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
-
         return gp.compute_ucb(t_x)
     
     def compute_ts(self, strat, features):
@@ -219,15 +250,12 @@ class gp_bandit_finance:
         if self.verbose: print('Computing thompson sampling for strategy:', strat)
         
         gp = self.strat_gp_dict[strat]
-
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
-
         return gp.compute_ts(t_x)
 
     def compute_ts_was(self, strat, features):
         "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)   
-
+        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)
         # First Compute the waser distancde
         #print('testing train target is', self.strat_gp_dict[strat].model.train_targets.shape[0], ' and window is ', self.size_window)
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
@@ -360,6 +388,40 @@ class gp_bandit_finance:
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
         
         return gp.compute_ts(t_x)
+
+    def compute_ucb_mab(self, strat):
+        "Compute ucb for one strat"
+        if self.verbose: print('Computing UCB for strategy:', strat)
+
+
+        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
+            
+            gp = self.strat_gp_dict[strat]
+            train_x = gp.model.train_inputs[0]
+            train_y = gp.model.train_targets
+
+            train_x_1 = train_x[(-self.size_window//2):]
+            train_y_1 = train_y[(-self.size_window//2):]
+            train_y_2 = train_y[:(- self.size_window//2)]
+
+            test_kol = scipy.stats.ks_2samp(train_y_2.detach().cpu().numpy(), train_y_1.detach().cpu().numpy(), alternative='less')
+            print(f"p value test:{test_kol}")
+            if test_kol[1] < 0.05: # Parameter to change p value threshold
+                # update the gp
+                self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
+                                                        self.bandit_algo,
+                                                        train_x       = train_x_1,
+                                                        train_y       = train_y_1,
+                                                        bandit_params = self.bandit_params,
+                                                        training_iter = self.training_iter)
+                self.strat_t[strat] = self.size_window//2 ## Reinitialize bandit as if just existed
+        
+        gp = self.strat_gp_dict[strat]
+        train_y = gp.model.train_targets
+        if train_y.shape[0] == 0:
+            return np.inf
+        else:
+            return np.mean(train_y.detach().cpu().numpy()) + np.sqrt(2*np.log(self.strat_t[strat])/train_y.shape[0])
 
     def plot_strategies(self, strats = "all", lv=-1, uv=1, n_test=100, xlabel=None):
         """Plot the fit of all strategies for sanity check"""

@@ -57,8 +57,9 @@ def sim(dict):
     strategies  = {'arm1' : {'contextual_params': {'feature_name'  : 'feature'}},
                    'arm2' : {'contextual_params': {'feature_name'  : 'feature'}}}
     bandit_params = 0.1
-    #bandit_algo   = 'UCB_WAS'
-    bandit_algo   = 'UCB_ADAGA'
+    bandit_algo   = 'UCB_WAS'
+    #bandit_algo   = 'UCB_ADAGA'
+    bandit_algo   = 'MAB_UCB'
     size_window   = 20
     training_iter = 30
     bandit_params = {'size_buffer': 50,
