@@ -25,15 +25,16 @@ class gp_bandit_finance:
                                            'threshold': 10,
                                            'delta': 0.6,
                                            },
-                            training_iter=10,
-                            verbose = False):
+                            training_iter = 10,
+                            verbose       = False):
 
-        self.strategies = strategies
+        self.strategies    = strategies
         self.training_iter = training_iter ## Number of epochs hyperparameter retraining
         self.bandit_algo   = bandit_algo
         self.bandit_params = bandit_params
         self.verbose       =  verbose
         self.likelihood    = likelihood
+
 
         if bandit_algo == 'TS_NS':
             self.size_buffer   = self.bandit_params['size_buffer']
@@ -117,6 +118,7 @@ class gp_bandit_finance:
                 ucb_strat = self.compute_ucb_was(strat, features)
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
+
         elif self.bandit_algo == 'TS_ADAGA':
             "Compute ts for each gp and select best"
             best_strat, best_ts = "", -np.inf
@@ -252,8 +254,8 @@ class gp_bandit_finance:
         return gp.compute_ts(t_x)
 
     def compute_ucb_was(self, strat, features):
-        "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)   
+        "Compute UCB for one strat with was check first"
+        if self.verbose: print('Computing UCB Waserstein for strategy:', strat)   
 
         # First Compute the waser distance
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
@@ -264,7 +266,6 @@ class gp_bandit_finance:
             
             lv = train_x.min().item()
             uv = train_x.max().item()
-            
             
             if self.change_point(strat, lv = lv, uv = uv):
                 # print('REGIME CHANGE UCB WAS !!!!!! for strategy:', strat)
@@ -295,7 +296,6 @@ class gp_bandit_finance:
                 # ax.set_title(f'Bandit UCB WAS \n strat {strat} \n Was dist= {round(d, 3)} ')
                 # plt.show()
 
-
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
                                                         train_x       = train_x[(- self.size_window//2):],
@@ -311,7 +311,7 @@ class gp_bandit_finance:
 
     def compute_ucb_ada(self, strat, features):
         "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)   
+        if self.verbose: print('Computing UCB ADA for strategy:', strat)   
 
         # First Compute the waser distance
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
@@ -337,7 +337,7 @@ class gp_bandit_finance:
     
     def compute_ts_ada(self, strat, features):
         "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)   
+        if self.verbose: print('Computing thompson sampling ADA for strategy:', strat)   
 
         # First Compute the waser distancde
         #print('testing train target is', self.strat_gp_dict[strat].model.train_targets.shape[0], ' and window is ', self.size_window)
@@ -380,10 +380,12 @@ class gp_bandit_finance:
             #ax.tick_params(axis='x', rotation=90)
 
         return f, axs
+
     def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=50):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
         """
+        error_on_purpose += 1
         gp = self.strat_gp_dict[strat]
         
         train_x = gp.model.train_inputs[0]
@@ -413,10 +415,13 @@ class gp_bandit_finance:
         gp_1.train()
 
         model, likelihood = gp_1.model, gp_1.model.likelihood
+        # Put the model into evaluation mode
         model.eval()
         likelihood.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             test_x = torch.linspace(lv, uv, n_test).double()
+
+            # Make predictions by feeding model through likelihood
             observed_pred = likelihood(model(test_x))
         posterior_mean_1 = observed_pred.mean
         lower1, upper1 = observed_pred.confidence_region()
@@ -442,7 +447,7 @@ class gp_bandit_finance:
 
         return posterior_mean_1, lower1, upper1, posterior_mean_2, lower2, upper2
 
-    def posterior_sliding_window_covar(self, strat, n_test = 100, lv = -1, uv = 1):
+    def posterior_sliding_window_covar(self, strat, n_test = 30, lv = -1, uv = 1):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
         """
@@ -465,7 +470,10 @@ class gp_bandit_finance:
         train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
         
         ### Posterior mean and covariance for each dataset
-        gp_1 = gp_bandit(gpytorch.likelihoods.GaussianLikelihood(),
+        o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
+        o_gaussLikelihood.noise = 0.0001
+
+        gp_1 = gp_bandit(o_gaussLikelihood,
                         self.bandit_algo,
                         train_x_1,
                         train_y_1,
@@ -480,11 +488,14 @@ class gp_bandit_finance:
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             test_x = torch.linspace(lv, uv, n_test).double()
             observed_pred = likelihood(model(test_x))
-        posterior_mean_1 = observed_pred.mean
-        posterior_covar_1 = observed_pred.covariance_matrix
+            posterior_mean_1  = observed_pred.mean
+            posterior_covar_1 = observed_pred.covariance_matrix
+            lower1, upper1    = observed_pred.confidence_region()
 
         ### Second posterior distribution
-        gp_2 = gp_bandit(gpytorch.likelihoods.GaussianLikelihood(),
+        o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
+        o_gaussLikelihood.noise = 0.0001
+        gp_2 = gp_bandit(o_gaussLikelihood,
                         self.bandit_algo,
                         train_x_2,
                         train_y_2,
@@ -498,11 +509,12 @@ class gp_bandit_finance:
         likelihood.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             test_x = torch.linspace(lv, uv, n_test).double()
-            observed_pred = likelihood(model(test_x))
-        posterior_mean_2 = observed_pred.mean
-        posterior_covar_2 = observed_pred.covariance_matrix
+            observed_pred     = likelihood(model(test_x))
+            posterior_mean_2  = observed_pred.mean
+            posterior_covar_2 = observed_pred.covariance_matrix
+            lower2, upper2    = observed_pred.confidence_region()
 
-        return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2
+        return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2, lower1, upper1, lower2, upper2
 
     def change_point(self, strat, n_test = 100, lv = -1, uv = 1):
         """Test for change point detection
@@ -513,18 +525,60 @@ class gp_bandit_finance:
         Return:
             bool: whether chage point is detected
         """        
-        posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2 = self.posterior_sliding_window_covar(strat, n_test, lv, uv)
+        posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2,\
+                lower1, upper1, lower2, upper2 = self.posterior_sliding_window_covar(strat, n_test, lv, uv)
 
         if (posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2) == (None, None, None, None):
             return False
-
-        # if True:
-        #  HERE : plot both 
 
         ### Compute wasserstein distance between gp:
         #distance_mean = (posterior_mean_1 - posterior_mean_2).pow(2).sum()
         d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), posterior_mean_2.numpy(), posterior_covar_2.numpy())
         
+#        posterior_mean_1, lower1, upper1,\
+#        posterior_mean_2, lower2, upper2 = self.posterior_sliding_window_confidence(strat)
+
+        # if True:
+        #  HERE : plot both 
+        if self.verbose:
+            print(f'** performing change point test for strategy : {strat} **')
+            print('Distance: ', round(d, 5), ' Threshold:', self.b )
+    
+            train_x = self.strat_gp_dict[strat].model.train_inputs[0]
+            train_y = self.strat_gp_dict[strat].model.train_targets
+            
+            train_x_1 = train_x[(-self.size_window//2):]
+            train_y_1 = train_y[(-self.size_window//2):]
+            train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
+            train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
+
+            print('Average performance GP1:', train_y_1.mean())
+            print('Average performance GP2:', train_y_2.mean())
+
+            test_x = torch.linspace(train_x.min().item(), train_x.max().item(), 100).double()
+            f, (ax1, ax2) = plt.subplots(1, 2, sharex=True)
+
+            for ax in (ax1, ax2):
+                ax.plot(test_x.numpy(), posterior_mean_1.numpy(), 'k', label="window_1")
+                ax.plot(train_x_1.numpy(), train_y_1.numpy(), 'k*')
+
+                ax.plot(test_x.numpy(), posterior_mean_2.numpy(), 'b', label="window_2")
+                ax.plot(train_x_2.numpy(), train_y_2.numpy(), 'b*')
+                #ax.set_title(f"Strategy: " + strat +  f". Wasserstein distance: distance {d}")
+
+                ax.yaxis.tick_right()
+                ax.yaxis.set_label_position("left")
+                ax.grid(axis='both',  linestyle='-', linewidth=0.5)
+                ax.set_axisbelow(True)        
+                ax.set_ylabel('Reward in ticks')
+                ax.set_xlabel(strat)
+                ax.legend(['GP1', '', 'GP2', ''], 
+                        handlelength=0.2, framealpha=0.2, loc='best', ncol=2)
+            ax1.fill_between(test_x.numpy(), lower1.detach().numpy(), upper1.detach().numpy(), alpha=0.4, color='k')
+            ax1.fill_between(test_x.numpy(), lower2.detach().numpy(), upper2.detach().numpy(), alpha=0.4, color='darkred')
+            plt.tight_layout()
+            plt.show()
+
         return (d > self.b)
     
 

@@ -70,6 +70,23 @@ class Plot_animation:
             f.savefig(os.path.join(self.save_path, f"{str(self.n_iters).zfill(4)}.png"))
         plt.clf()
         self.n_iters += 1
+    
+    def plot_ts_frame(self, bandit, strats = "all", lv=-1, uv=1, n_test=100, xlabel=None):
+        
+        if strats == "all":
+            nb_strategies = len(bandit.strategies.keys())
+            strats = bandit.strategies.keys()
+        else: nb_strategies = len(strats)
+
+        f, axs = plt.subplots(1, nb_strategies, figsize=(4*nb_strategies,3), sharey=True)
+        axs = np.array([axs])
+        for ((_, strat), ax) in zip(enumerate(strats), np.ndarray.flatten(axs)):
+            gp = bandit.strat_gp_dict[strat]
+            ax = gp.build_plot(ax, lv=lv, uv=uv, n_test = n_test, xlabel=xlabel)
+            ax.set_title(strat)
+            f.savefig(os.path.join(self.save_path, f"{str(self.n_iters).zfill(4)}.png"))
+        plt.clf()
+        self.n_iters += 1
 
     def make_animation(self):
         images = []
