@@ -123,7 +123,7 @@ def run(size_window, noise, lengthscale = None, L=100, T=100,  N_wasserstein_com
     plt.close()
 
 
-if __name__ == "___main__":
+if __name__ == "__main__":
     
     ## Parameters Environment
     size_window = [10, 20, 50]
