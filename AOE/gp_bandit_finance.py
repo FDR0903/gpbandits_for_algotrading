@@ -13,7 +13,7 @@ from .plots import rescale_plot
 from .gp_bandit import gp_bandit
 from .gp_utils import Wasserstein_GP_mean
 
-from .inducing_points_version.core.adaptive_regionalization import AdaptiveRegionalization_bandit
+#from .inducing_points_version.core.adaptive_regionalization import AdaptiveRegionalization_bandit
 
 class gp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 

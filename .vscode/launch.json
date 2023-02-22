@@ -8,7 +8,7 @@
             "name": "GP Bandit Debug",
             "type": "python",
             "request": "launch",
-            "program": "/home/pierre/git/gpbandits_for_algotrading/scripts/sim_synthetic.py",
+            "program": "/home/osselinp/gpbandits_for_algotrading/scripts/empirical_test_error.py",
             "console": "integratedTerminal",
             "justMyCode": true
         }
