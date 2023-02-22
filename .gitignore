@@ -8,4 +8,5 @@
 *.png
 *.pkl
 /plot
+data/
 .DS_Store
