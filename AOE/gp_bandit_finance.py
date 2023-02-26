@@ -38,7 +38,7 @@ class gp_bandit_finance:
         self.bandit_params = bandit_params
         self.verbose       =  verbose
         self.likelihood    = likelihood
-        self.reinit    = likelihood
+        self.reinit    = reinit
 
 
         if bandit_algo == 'TS_NS':
