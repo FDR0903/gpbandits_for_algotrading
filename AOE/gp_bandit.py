@@ -145,8 +145,6 @@ class gp_bandit:
         ax.fill_between(test_x.detach().numpy(), lower.detach().numpy(), upper.detach().numpy(), alpha=0.5, 
                           facecolor='silver', hatch="ooo", edgecolor="gray")
 
-
-
         ax.grid(axis='both', color='gainsboro', linestyle='-', linewidth=0.5)
 
         

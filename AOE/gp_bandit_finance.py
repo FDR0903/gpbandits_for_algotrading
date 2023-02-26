@@ -18,8 +18,8 @@ from .inducing_points_version.core.adaptive_regionalization import AdaptiveRegio
 class gp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 
                             likelihood = gpytorch.likelihoods.GaussianLikelihood(),
-                            train_x = torch.zeros((0, 1), dtype=torch.float64),
-                            train_y = torch.zeros(0, dtype=torch.float64),
+                            train_x    = torch.zeros((0, 1), dtype=torch.float64),
+                            train_y    = torch.zeros(0, dtype=torch.float64),
                             bandit_params={'size_buffer': 50,
                                            'lambda': 1.,
                                            'size_window': 100,
@@ -28,15 +28,26 @@ class gp_bandit_finance:
                                            },
                             training_iter = 10,
                             verbose       = False):
-
+        
         self.strategies    = strategies
         self.training_iter = training_iter ## Number of epochs hyperparameter retraining
         self.bandit_algo   = bandit_algo
         self.bandit_params = bandit_params
         self.verbose       =  verbose
         self.likelihood    = likelihood
+        self.records       = {} # Traces of what happens
 
+        # TODO Check if that's alright
+        self.likelihood.noise = 0.0001
 
+        self.strat_gp_dict = {}
+        for strat in self.strategies.keys():
+            self.strat_gp_dict[strat] = gp_bandit(likelihood,
+                                                    bandit_algo,
+                                                    train_x,
+                                                    train_y,
+                                                    bandit_params = bandit_params,
+                                                    training_iter = training_iter)
         if bandit_algo == 'TS_NS':
             self.size_buffer   = self.bandit_params['size_buffer']
         elif bandit_algo == 'UCB_NS':
@@ -46,11 +57,17 @@ class gp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.b             = self.bandit_params['threshold'] ### Must be even to divide last points by two
             self.size_buffer   = self.bandit_params['size_buffer']
+            # records
+            print('INTIALIZING!')
+            self.records['was_distances'] = {s: [] for s in self.strat_gp_dict.keys() }
         elif bandit_algo == 'UCB_WAS':
             self.size_window   = self.bandit_params['size_window']
             self.b             = self.bandit_params['threshold'] ### Must be even to divide last points by two
             self.lamb          = self.bandit_params['lambda']
             self.size_buffer   = self.bandit_params['size_buffer']
+            # records
+            print('INTIALIZING!')
+            self.records['was_distances'] = {s: [] for s in self.strat_gp_dict.keys() }
         elif bandit_algo == 'TS_ADAGA':
             self.size_window   = self.bandit_params['size_window']
             self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
@@ -75,14 +92,6 @@ class gp_bandit_finance:
             for strat in self.strategies.keys():
                 self.strat_t[strat] = 0      
         
-        self.strat_gp_dict = {}
-        for strat in self.strategies.keys():
-            self.strat_gp_dict[strat] = gp_bandit(likelihood,
-                                                    bandit_algo,
-                                                    train_x,
-                                                    train_y,
-                                                    bandit_params = bandit_params,
-                                                    training_iter = training_iter)
 
     def select_best_strategy(self, features):
         if self.bandit_algo == 'UCB_NS':
@@ -159,11 +168,11 @@ class gp_bandit_finance:
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
         elif self.bandit_algo == 'MAB_TS':
-            "Compute TS for classical mab"
+            "Compute ucb for classical mab"
             best_strat, best_ucb = "", -np.inf
             for strat in self.strategies.keys():
                 self.strat_t[strat] += 1
-                ucb_strat = self.compute_ts(strat, features)
+                ucb_strat = self.compute_ucb_mab(strat)
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
         else:
@@ -267,7 +276,12 @@ class gp_bandit_finance:
             lv = train_x.min().item()
             uv = train_x.max().item()
 
-            if self.change_point(strat, lv = lv, uv = uv):
+            b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
+
+            # Record the distances
+            self.records['was_distances'][strat] += [was_distance]
+
+            if b_changepoint:
                 # update the gp
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
@@ -295,7 +309,18 @@ class gp_bandit_finance:
             lv = train_x.min().item()
             uv = train_x.max().item()
             
-            if self.change_point(strat, lv = lv, uv = uv):
+            # before testing the change points show the learnt GPs
+            if self.verbose: 
+                print('Plotting the GPs of strategies for the bandit: ', self.bandit_algo)
+                self.plot_strategies()
+                plt.show()
+
+            b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
+
+            # Record the distances
+            self.records['was_distances'][strat] += [was_distance] 
+
+            if b_changepoint:
                 # print('REGIME CHANGE UCB WAS !!!!!! for strategy:', strat)
                 
                 # posterior_mean_1, lower1, upper1, \
@@ -331,6 +356,8 @@ class gp_bandit_finance:
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
 
+                
+ 
         gp = self.strat_gp_dict[strat]
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
 
@@ -347,7 +374,7 @@ class gp_bandit_finance:
         
             train_x = gp.model.train_inputs[0]
             train_y = gp.model.train_targets
-
+            
             if self.change_point_adaga(strat):
                 self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
@@ -423,7 +450,7 @@ class gp_bandit_finance:
         else:
             return np.mean(train_y.detach().cpu().numpy()) + np.sqrt(2*np.log(self.strat_t[strat])/train_y.shape[0])
 
-    def plot_strategies(self, strats = "all", lv=-1, uv=1, n_test=100, xlabel=None):
+    def plot_strategies(self, strats = "all", lv=None, uv=None, n_test=100, xlabel=None):
         """Plot the fit of all strategies for sanity check"""
         
         if strats == "all":
@@ -641,7 +668,7 @@ class gp_bandit_finance:
             plt.tight_layout()
             plt.show()
 
-        return (d > self.b)
+        return (d > self.b), d
     
 
     def change_point_adaga(self, strat):
