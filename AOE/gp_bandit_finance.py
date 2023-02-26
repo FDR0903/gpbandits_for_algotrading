@@ -39,7 +39,7 @@ class gp_bandit_finance:
         self.verbose       =  verbose
         self.likelihood    = likelihood
         self.records       = {} # Traces of what happens
-        self.reinit    = likelihood
+        self.reinit        = reinit
 
         # TODO Check if that's alright
         self.likelihood.noise = 0.0001
