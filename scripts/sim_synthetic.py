@@ -59,7 +59,8 @@ def sim(dict):
     bandit_params = 0.1
     bandit_algo   = 'UCB_WAS'
     #bandit_algo   = 'UCB_ADAGA'
-    bandit_algo   = 'MAB_UCB'
+    #bandit_algo   = 'MAB_UCB'
+    #bandit_algo   = 'UCB_LR'
     size_window   = 20
     training_iter = 30
     bandit_params = {'size_buffer': 50,
@@ -67,11 +68,12 @@ def sim(dict):
                      'size_window': size_window,
                      'threshold': 10,
                      'delta': 0.6}
+    reinit = True
 
     #likelihood    = gpytorch.likelihoods.GaussianLikelihood()
 
     # Bandit initialization
-    bandit = gp_bandit_finance(strategies, bandit_algo=bandit_algo, bandit_params=bandit_params, training_iter=training_iter)
+    bandit = gp_bandit_finance(strategies, bandit_algo=bandit_algo, bandit_params=bandit_params, training_iter=training_iter, reinit=reinit)
     
     # Simulation bandit
     regret_sim = torch.zeros(T)

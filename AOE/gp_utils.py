@@ -68,7 +68,7 @@ class Plot_animation:
             ax = gp.build_plot(ax, lv=lv, uv=uv, n_test = n_test, xlabel=xlabel)
             ax.set_title(strat)
             f.savefig(os.path.join(self.save_path, f"{str(self.n_iters).zfill(4)}.png"))
-        plt.clf()
+        plt.close()
         self.n_iters += 1
     
     def plot_ts_frame(self, bandit, strats = "all", lv=-1, uv=1, n_test=100, xlabel=None):
