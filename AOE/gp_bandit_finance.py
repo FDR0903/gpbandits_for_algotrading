@@ -106,6 +106,7 @@ class gp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
+            self.check_type_II = self.bandit_params['check_type_II']
             self.records['lr_statistic'] = {s: [] for s in self.strat_gp_dict.keys() }
 
     def select_best_strategy(self, features):
@@ -898,33 +899,20 @@ class gp_bandit_finance:
 
         R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv))
         
+        
+        # Conpute Threshold based on type 1 error
+        aux = v_h0 @ delta
+        mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
+
+        sum_lambda_0 = torch.trace(aux @ aux)
+        largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+        smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
+
+        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.delta)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.delta)*largest_eih0))
+    
         # If delta_I is specified, abide by it, otherwise try to compute one
-        if self.delta:
-            # Conpute Threshold based on type 1 error
-            aux = v_h0 @ self.delta
-            mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
-
-            sum_lambda_0 = torch.trace(aux @ aux)
-            largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
-            smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-            largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
-
-            tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.type_1_error)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
-
-            #return R >= self.delta , R #, tau_I
-            return R >= tau_I, R, tau_I
-        else:
-            # Conpute Threshold based on type 1 error
-            aux = v_h0 @ delta
-            mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
-
-            sum_lambda_0 = torch.trace(aux @ aux)
-            largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
-            smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-            largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
-
-            tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.type_1_error)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
-
+        if self.check_type_II:
             #In case significant test compute equivalent second threshold
             aux           = v_h1 @ delta
 
@@ -939,11 +927,13 @@ class gp_bandit_finance:
             # If test inferior, we already know there is no change
             if R <= tau_I:
                 return False, R, tau_I, error_II
-
             #elif error_II < self.threshold:
                 #return True, R, tau_I, error_II
             else:
                 return True, R, tau_I, error_II
+        else:
+            #return R >= self.delta , R #, tau_I
+            return R >= tau_I, R, tau_I
         
     def change_point_adaga(self, strat):
         """
