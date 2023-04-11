@@ -123,13 +123,16 @@ class gp_bandit:
         likelihood.eval()
         
         if lv is None:
-            lv = model.train_inputs[0].min().item()
-            uv = model.train_inputs[0].max().item()
+            try:
+                lv, uv = model.train_inputs[0].min().item(), model.train_inputs[0].max().item()
+            except Exception as e:
+                # Here, it's certainly because the train_inputs is empty !! and this method has been called right after a complete reset
+                lv, uv = -1, 1
         
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             test_x = torch.linspace(lv, uv, n_test).double()
             observed_pred = likelihood(model(test_x))
-
+        
         train_x = model.train_inputs[0]
         train_y = model.train_targets
 
@@ -141,6 +144,7 @@ class gp_bandit:
 
         # Plot predictive means as blue line
         ax.plot(test_x.numpy(), observed_pred.mean.numpy(), 'k', linewidth=3)
+        
         # Shade between the lower and upper confidence bounds
         ax.fill_between(test_x.detach().numpy(), lower.detach().numpy(), upper.detach().numpy(), alpha=0.5, 
                           facecolor='silver', hatch="ooo", edgecolor="gray")
@@ -294,8 +298,8 @@ class ExactGPModel(gpytorch.models.ExactGP):
         y_train = torch.cat((y_train, torch.tensor([y_new])))
 
         if x_train.shape[0] > size_buffer:
-            x_train = x_train[1:-1]
-            y_train = y_train[1:-1]
+            x_train = x_train[1:]
+            y_train = y_train[1:]
 
         self.set_train_data(x_train, y_train, strict=False)
 

@@ -9,6 +9,8 @@ import gpytorch
 import torch, random
 import numpy as np
 import matplotlib.pyplot as plt
+from botorch.utils.transforms import standardize, normalize, unnormalize
+
 from .plots import rescale_plot
 from scipy.linalg import eigh
 
@@ -40,6 +42,11 @@ class gp_bandit_finance:
         self.likelihood    = likelihood
         self.records       = {} # Traces of what happens
         self.reinit        = reinit
+
+        # optimisation of computations
+        self.last_change_point_test_results = {}
+        for algo_name in ('TS_NS', 'UCB_NS', 'TS_WAS', 'UCB_WAS', 'MAB_UCB', 'UCB_LR', 'RANDOM'):
+            self.last_change_point_test_results[algo_name] = {}
 
         # TODO Check if that's alright
         self.likelihood.noise = 0.0001
@@ -99,9 +106,15 @@ class gp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
-        
+            self.records['lr_statistic'] = {s: [] for s in self.strat_gp_dict.keys() }
 
     def select_best_strategy(self, features):
+        # before testing the change points show the learnt GPs
+        if self.verbose: 
+            print('Plotting the GPs of strategies for the bandit: ', self.bandit_algo)
+            self.plot_strategies()
+            plt.show()
+
         if self.bandit_algo == 'UCB_NS':
             "Compute ucb for each gp and select best"
             best_strat, best_ucb = "", -np.inf
@@ -204,6 +217,11 @@ class gp_bandit_finance:
         x_new = features[self.strategies[strat]['contextual_params']['feature_name']]
         y_new = reward
 
+        # the bandit is now eligible for change point detection
+        if strat in self.last_change_point_test_results[self.bandit_algo].keys():
+            if self.verbose: print('I am deleting the change point results of ', strat)
+            self.last_change_point_test_results[self.bandit_algo].pop(strat, None)
+
         #Add point to model
         if self.bandit_algo == 'UCB_NS':
             model.update_data_nst(x_new, y_new, self.size_buffer)
@@ -241,12 +259,15 @@ class gp_bandit_finance:
         elif self.bandit_algo == 'UCB_LR':
             model.update_data(x_new, y_new)
             # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'RANDOM':
+            # no need for points
+            best_strat = 'OK'
         else:
             best_strat = 'NOT IMPLEMENTED'
         
-
         if retrain_hyperparameters:
-            model.train()
+            if self.bandit_algo not in ("RANDOM", "MAB_UCB", "MAB_TS"): #add exceptions here
+                model.train()
 
 #    def update_data_nst(self, features, strat, reward, size_buffer, retrain_hyperparameters = False):
 #        "One get reward, update data and retrain gp of the corresponding strat"#
@@ -281,50 +302,9 @@ class gp_bandit_finance:
         return gp.compute_ts(t_x)
 
     def compute_ts_was(self, strat, features):
-        "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling waserstein for strategy:', strat)
-        # First Compute the waser distancde
-        #print('testing train target is', self.strat_gp_dict[strat].model.train_targets.shape[0], ' and window is ', self.size_window)
-        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
-            gp = self.strat_gp_dict[strat]
-        
-            train_x = gp.model.train_inputs[0]
-            train_y = gp.model.train_targets
+        "Compute Thompson Sampling for one strat with was check first"
+        if self.verbose: print('Computing TS Waserstein for strategy:', strat)   
             
-            lv = train_x.min().item()
-            uv = train_x.max().item()
-
-            b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
-
-            # Record the distances
-            self.records['was_distances'][strat] += [was_distance]
-
-            if b_changepoint:
-                # update the gp
-                if self.reinit:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x = torch.zeros((0, 1), dtype=torch.float64),
-                                                        train_y = torch.zeros(0, dtype=torch.float64),
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-                else:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x       = train_x[(- self.size_window//2):],
-                                                        train_y       = train_y[(- self.size_window//2):],
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-
-        gp = self.strat_gp_dict[strat]
-        t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
-        
-        return gp.compute_ts(t_x)
-
-    def compute_ucb_was(self, strat, features):
-        "Compute UCB for one strat with was check first"
-        if self.verbose: print('Computing UCB Waserstein for strategy:', strat)   
-
         # First Compute the waser distance
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
             gp = self.strat_gp_dict[strat]
@@ -335,18 +315,23 @@ class gp_bandit_finance:
             lv = train_x.min().item()
             uv = train_x.max().item()
 
-            # before testing the change points show the learnt GPs
-            if self.verbose: 
-                print('Plotting the GPs of strategies for the bandit: ', self.bandit_algo)
-                self.plot_strategies()
-                plt.show()
-
-            b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
+            if strat in self.last_change_point_test_results[self.bandit_algo].keys():
+                # it means no point has been added or reint has been done, so no need to redo test
+                b_changepoint, was_distance = self.last_change_point_test_results[self.bandit_algo][strat]
+            else:
+                b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
+                if self.verbose: print('I am storing the change point test results for ', strat)
+                self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint, was_distance
 
             # Record the distances
             self.records['was_distances'][strat] += [was_distance] 
 
             if b_changepoint:
+                if self.verbose: 
+                    print('REGIME CHANGE! Plotting the GPs of strategies for the bandit: ', self.bandit_algo)
+                    self.plot_strategies()
+                    plt.show()
+                    
                 # print('REGIME CHANGE UCB WAS !!!!!! for strategy:', strat)
                 
                 # posterior_mean_1, lower1, upper1, \
@@ -389,9 +374,90 @@ class gp_bandit_finance:
                                                         train_y       = train_y[(- self.size_window//2):],
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
+                self.last_change_point_test_results['TS_WAS'][strat] = {}
+                self.last_change_point_test_results['TS_WAS'].pop(strat, None)
+
+        gp = self.strat_gp_dict[strat]
+        t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
+
+        return gp.compute_ts(t_x)
+
+    def compute_ucb_was(self, strat, features):
+        "Compute UCB for one strat with was check first"
+        if self.verbose: print('Computing UCB Waserstein for strategy:', strat)   
+            
+        # First Compute the waser distance
+        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
+            gp = self.strat_gp_dict[strat]
+        
+            train_x = gp.model.train_inputs[0]
+            train_y = gp.model.train_targets
+            
+            lv = train_x.min().item()
+            uv = train_x.max().item()
+
+            if strat in self.last_change_point_test_results[self.bandit_algo].keys():
+                # it means no point has been added or reint has been done, so no need to redo test
+                b_changepoint, was_distance = self.last_change_point_test_results[self.bandit_algo][strat]
+            else:
+                b_changepoint, was_distance = self.change_point(strat, lv = lv, uv = uv)
+                if self.verbose: print('I am storing the change point test results for ', strat)
+                self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint, was_distance
+
+            # Record the distances
+            self.records['was_distances'][strat] += [was_distance] 
+
+            if b_changepoint:
+                if self.verbose: 
+                    print('REGIME CHANGE! Plotting the GPs of strategies for the bandit: ', self.bandit_algo)
+                    self.plot_strategies()
+                    plt.show()
+                    
+                # print('REGIME CHANGE UCB WAS !!!!!! for strategy:', strat)
+                
+                # posterior_mean_1, lower1, upper1, \
+                #     posterior_mean_2, lower2, upper2 = \
+                #         self.posterior_sliding_window_confidence(strat, n_test = 100, lv=lv, uv=uv)
+
+                # posterior_mean_1, posterior_covar_1, \
+                #     posterior_mean_2, posterior_covar_2 = \
+                #         self.posterior_sliding_window_covar(strat, 100, lv, uv)
+
+                # ### Compute wasserstein distance between gp:
+                # d = Wasserstein_GP_mean(posterior_mean_1.numpy(), posterior_covar_1.numpy(), 
+                #             posterior_mean_2.numpy(), posterior_covar_2.numpy())
 
                 
- 
+                # # Plot
+                # fig, ax = plt.subplots(1, 1)
+                # test_x = torch.linspace(lv, uv, 100).double()
+                # ax.plot(test_x.numpy(), posterior_mean_1.numpy(), 'b')
+                # ax.plot(test_x.numpy(), posterior_mean_2.numpy(), 'r')
+                # # Shade between the lower and upper confidence bounds
+                # ax.fill_between(test_x.numpy(), lower1.detach().numpy(), upper1.detach().numpy(), alpha=0.5)
+                # ax.fill_between(test_x.numpy(), lower2.detach().numpy(), upper2.detach().numpy(), alpha=0.5)
+                # # legend / title
+                # ax.legend(['mean 1', 'mean 2'])
+                # ax.set_title(f'Bandit UCB WAS \n strat {strat} \n Was dist= {round(d, 3)} ')
+                # plt.show()
+
+                if self.reinit:
+                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
+                                                        self.bandit_algo,
+                                                        train_x = torch.zeros((0, 1), dtype=torch.float64),
+                                                        train_y = torch.zeros(0, dtype=torch.float64),
+                                                        bandit_params = self.bandit_params,
+                                                        training_iter = self.training_iter)
+                else:
+                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
+                                                        self.bandit_algo,
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
+                                                        bandit_params = self.bandit_params,
+                                                        training_iter = self.training_iter)
+                self.last_change_point_test_results['UCB_WAS'][strat] = {}
+                self.last_change_point_test_results['UCB_WAS'].pop(strat, None)
+
         gp = self.strat_gp_dict[strat]
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
 
@@ -470,7 +536,6 @@ class gp_bandit_finance:
         "Compute ucb for one strat"
         if self.verbose: print('Computing UCB for strategy:', strat)
 
-
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
             
             gp = self.strat_gp_dict[strat]
@@ -482,7 +547,7 @@ class gp_bandit_finance:
             train_y_2 = train_y[:(- self.size_window//2)]
 
             test_kol = scipy.stats.ks_2samp(train_y_2.detach().cpu().numpy(), train_y_1.detach().cpu().numpy(), alternative='less')
-            print(f"p value test:{test_kol}")
+            #print(f"p value test:{test_kol}")
             if test_kol[1] < 0.05: # Parameter to change p value threshold
                 # update the gp
                 if self.reinit:
@@ -517,11 +582,20 @@ class gp_bandit_finance:
         # First Compute the waser distance
         if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
             gp = self.strat_gp_dict[strat]
-        
+
             train_x = gp.model.train_inputs[0]
             train_y = gp.model.train_targets
+            
+            if strat in self.last_change_point_test_results[self.bandit_algo].keys():
+                # it means no point has been added or reint has been done, so no need to redo test
+                b_changepoint = self.last_change_point_test_results[self.bandit_algo][strat]
+            else:
+                b_changepoint, lr_statistic, tau_I = self.change_point_lr(strat) #, tau_I 
+                if self.verbose: print('I am storing the change point test results for ', strat, ' with LR')
+                self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint
+                self.records['lr_statistic'][strat] += [ (lr_statistic, tau_I) ] 
 
-            if self.change_point_lr(strat):
+            if b_changepoint:
                 if self.reinit:
                     self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
                                                         self.bandit_algo,
@@ -538,7 +612,11 @@ class gp_bandit_finance:
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
 
-                self.strat_gp_dict[strat].train()
+                    self.strat_gp_dict[strat].train() # train only if there are point
+
+                # remove last test
+                self.last_change_point_test_results[self.bandit_algo][strat] = {}
+                self.last_change_point_test_results[self.bandit_algo].pop(strat, None)
 
         gp = self.strat_gp_dict[strat]
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
@@ -547,7 +625,7 @@ class gp_bandit_finance:
 
 
 
-    def plot_strategies(self, strats = "all", lv=-1, uv=1, n_test=100, xlabel=None):
+    def plot_strategies(self, strats = "all", lv=None, uv=None, n_test=100, xlabel=None):
         """Plot the fit of all strategies for sanity check"""
         
         if strats == "all":
@@ -567,7 +645,7 @@ class gp_bandit_finance:
 
         return f, axs
 
-    def posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=50):
+    def OLD_posterior_sliding_window_confidence(self, strat, n_test = 100, lv = -1, uv = 1, training_iter=50):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
         """
@@ -641,6 +719,9 @@ class gp_bandit_finance:
         
         train_x = gp.model.train_inputs[0]
         train_y = gp.model.train_targets
+        
+        #bounds = torch.tensor([[-1.0], [1.0]])
+        #train_y_normalized =  normalize(train_y.detach(), bounds=bounds)
 
         try:
             if train_y.shape[0] < self.size_window:
@@ -711,6 +792,7 @@ class gp_bandit_finance:
         Return:
             bool: whether chage point is detected
         """        
+        
         posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2,\
                 lower1, upper1, lower2, upper2 = self.posterior_sliding_window_covar(strat, n_test, lv, uv)
 
@@ -733,6 +815,9 @@ class gp_bandit_finance:
             train_x = self.strat_gp_dict[strat].model.train_inputs[0]
             train_y = self.strat_gp_dict[strat].model.train_targets
             
+            #bounds = torch.tensor([[-1.0], [1.0] ])
+            #train_y_normalized =  normalize(train_y.detach(), bounds=bounds)
+
             train_x_1 = train_x[(-self.size_window//2):]
             train_y_1 = train_y[(-self.size_window//2):]
             train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
@@ -796,15 +881,14 @@ class gp_bandit_finance:
         gp.change_data(train_x, train_y)
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood() 
-        model = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood)
+        model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood)
         model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             latent_f_star = model(S_2)
             observed_pred = likelihood(latent_f_star)
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         mu, K = observed_pred.mean, observed_pred.covariance_matrix
-        v_h1 = K + (likelihood.noise**2)*torch.eye(self.size_window//2)
-
+        v_h1  = K + (likelihood.noise**2)*torch.eye(self.size_window//2)
 
         # Compute delta Vh0 Vh1
         v_h0_inv = torch.inverse(v_h0)
@@ -814,9 +898,21 @@ class gp_bandit_finance:
 
         R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv))
         
-        # If threshold is specified, abide by it, otherwise try to compute one
+        # If delta_I is specified, abide by it, otherwise try to compute one
         if self.delta:
-            return R >= self.delta
+            # Conpute Threshold based on type 1 error
+            aux = v_h0 @ self.delta
+            mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
+
+            sum_lambda_0 = torch.trace(aux @ aux)
+            largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+            smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+            largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
+
+            tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.type_1_error)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
+
+            #return R >= self.delta , R #, tau_I
+            return R >= tau_I, R, tau_I
         else:
             # Conpute Threshold based on type 1 error
             aux = v_h0 @ delta
@@ -830,14 +926,15 @@ class gp_bandit_finance:
             tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.type_1_error)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.type_1_error)*largest_eih0))
 
             #In case significant test compute equivalent second threshold
-            aux = v_h1 @ delta
+            aux           = v_h1 @ delta
+
             #mu_h1 = -torch.trace(aux)
-            mu_h1 = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
-            sum_lambda_1 = torch.trace(aux @ aux)
-            largest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+            mu_h1         = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
+            sum_lambda_1  = torch.trace(aux @ aux)
+            largest_eih1  = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
             smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-            largest_eih1 = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
-            error_II = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2
+            largest_eih1  = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
+            error_II      = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2
 
             # If test inferior, we already know there is no change
             if R <= tau_I:
@@ -845,12 +942,10 @@ class gp_bandit_finance:
 
             #elif error_II < self.threshold:
                 #return True, R, tau_I, error_II
-
             else:
                 return True, R, tau_I, error_II
         
     def change_point_adaga(self, strat):
-
         """
         This method applies ADAGA streaming GP regression.
         """
