@@ -49,7 +49,7 @@ class gp_bandit_finance:
             self.last_change_point_test_results[algo_name] = {}
 
         # TODO Check if that's alright
-        self.likelihood.noise = 0.0001
+        #self.likelihood.noise = torch.tensor(0.0001)
 
         self.strat_gp_dict = {}
         for strat in self.strategies.keys():
@@ -81,32 +81,36 @@ class gp_bandit_finance:
             self.records['was_distances'] = {s: [] for s in self.strat_gp_dict.keys() }
         elif bandit_algo == 'TS_ADAGA':
             self.size_window   = self.bandit_params['size_window']
-            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.size_buffer   = self.bandit_params['size_buffer']
         elif bandit_algo == 'UCB_ADAGA':
             self.size_window   = self.bandit_params['size_window']
-            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.size_buffer   = self.bandit_params['size_buffer']
         elif bandit_algo == 'MAB_UCB':
             self.size_window   = self.bandit_params['size_window']
-            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
             for strat in self.strategies.keys():
                 self.strat_t[strat] = 0
         elif bandit_algo == 'MAB_TS':
             self.size_window   = self.bandit_params['size_window']
-            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
             for strat in self.strategies.keys():
                 self.strat_t[strat] = 0
         elif bandit_algo == 'UCB_LR':
             self.size_window   = self.bandit_params['size_window']
-            self.delta         = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.check_type_II = self.bandit_params['check_type_II']
+            if 'force_threshold' in self.bandit_params:
+                self.force_threshold = self.bandit_params['force_threshold']
+            else:
+                self.force_threshold = None
             self.records['lr_statistic'] = {s: [] for s in self.strat_gp_dict.keys() }
 
     def select_best_strategy(self, features):
@@ -591,10 +595,10 @@ class gp_bandit_finance:
                 # it means no point has been added or reint has been done, so no need to redo test
                 b_changepoint = self.last_change_point_test_results[self.bandit_algo][strat]
             else:
-                b_changepoint, lr_statistic, tau_I = self.change_point_lr(strat) #, tau_I 
+                b_changepoint, lr_statistic, tau_I, delta_II = self.change_point_lr(strat) #, tau_I 
                 if self.verbose: print('I am storing the change point test results for ', strat, ' with LR')
                 self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint
-                self.records['lr_statistic'][strat] += [ (lr_statistic, tau_I) ] 
+                self.records['lr_statistic'][strat] += [ (lr_statistic, tau_I, delta_II) ] 
 
             if b_changepoint:
                 if self.reinit:
@@ -738,10 +742,10 @@ class gp_bandit_finance:
         train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
         
         ### Posterior mean and covariance for each dataset
-        o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
-        o_gaussLikelihood.noise = 0.0001
-
-        gp_1 = gp_bandit(o_gaussLikelihood,
+        #o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
+        #o_gaussLikelihood.noise = torch.tensor(0.0001)
+        
+        gp_1 = gp_bandit(self.likelihood,
                         self.bandit_algo,
                         train_x_1,
                         train_y_1,
@@ -761,9 +765,10 @@ class gp_bandit_finance:
             lower1, upper1    = observed_pred.confidence_region()
 
         ### Second posterior distribution
-        o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
-        o_gaussLikelihood.noise = 0.0001
-        gp_2 = gp_bandit(o_gaussLikelihood,
+        #o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
+        #o_gaussLikelihood.noise = torch.tensor(0.0001)
+
+        gp_2 = gp_bandit(self.likelihood,
                         self.bandit_algo,
                         train_x_2,
                         train_y_2,
@@ -853,6 +858,110 @@ class gp_bandit_finance:
 
         return (d > self.b), d
     
+    def change_point_lr_old(self, strat):
+        
+        # Compute corresponding type 2 error
+        # Compute Likelihood ratio test
+        # If ratio test big enough reinitialize
+        gp = self.strat_gp_dict[strat]
+        train_x, train_y = gp.model.train_inputs[0], gp.model.train_targets
+        if gp.model.train_inputs[0].shape[0] < self.size_window:
+            return False
+
+        #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
+        S_1, S_2 = train_x[(-self.size_window):(- self.size_window//2)], train_x[(-self.size_window//2):]
+        y_1, y_2 = train_y[(-self.size_window):(- self.size_window//2)], train_y[(-self.size_window//2):]
+
+        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
+        gp.change_data(S_1, y_1)
+        likelihood_gp, model = gp.model.likelihood, gp.model
+        model.eval()
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            latent_f_tilde = model(S_2)
+            observed_pred = likelihood_gp(latent_f_tilde)
+        mu_tilde, K_tilde = observed_pred.mean, observed_pred.covariance_matrix
+        v_h0 = K_tilde + (likelihood_gp.noise**2)*torch.eye(self.size_window//2)
+
+
+        # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
+        gp.change_data(train_x, train_y)
+        
+        #likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise                  = likelihood_gp.noise, 
+                                                                                        learn_additional_noise = False) 
+        #likelihood2 = gp.model.likelihood # TODO: VERIFY 
+        #likelihood              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor(0.0001), 
+        #                                                                            learn_additional_noise=True) 
+        #likelihood.noise = gp.model.likelihood.noise
+        #likelihood              = gpytorch.likelihoods.GaussianLikelihood()
+        #likelihood.noise        = 0.0001
+        #likelihood              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor(0.0001), 
+        #                                                                            learn_additional_noise=True) 
+        model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood_alt)
+        model.eval()
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            latent_f_star = model(S_2)
+            observed_pred = likelihood_alt(latent_f_star)
+        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
+        mu, K = observed_pred.mean, observed_pred.covariance_matrix
+        v_h1  = K + (likelihood_alt.noise**2)*torch.eye(self.size_window//2)
+
+        # Compute delta Vh0 Vh1
+        v_h0_inv = torch.inverse(v_h0)
+        v_h1_inv = torch.inverse(v_h1)
+        delta = v_h1_inv - v_h0_inv
+        target_bis = y_2 - mu_tilde
+
+        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv))
+        # was - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv)) before
+        # Conpute Threshold based on type 1 error
+        aux   = v_h0 @ delta
+        mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
+
+        sum_lambda_0 = torch.trace(aux @ aux)
+        largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+        smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
+
+        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.delta_I)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.delta_I)*largest_eih0))
+
+        # compute error II prob
+        aux           = v_h1 @ delta
+
+        #mu_h1 = -torch.trace(aux)
+        mu_h1         = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
+        sum_lambda_1  = torch.trace(aux @ aux)
+        largest_eih1  = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+        smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih1  = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
+
+        # If delta_I is specified, abide by it, otherwise try to compute one
+        if self.force_threshold is not None:
+            error_II      = torch.max(torch.exp(-((mu_h1 - self.force_threshold)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - self.force_threshold)/(8*torch.tensor(largest_eih1))))) # = lambda 2            
+
+            #print('I m forcing the threshold to ', self.force_threshold, ' and the LR stat is ', float(R), ' and tau_I is', float(tau_I))
+            if self.check_type_II:
+                return R >= self.force_threshold, R, tau_I, error_II
+            else:
+                return R >= self.force_threshold, R, tau_I, error_II
+        
+        else:
+            error_II      = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2                    
+        
+            if self.check_type_II:
+                #In case significant test compute equivalent second threshold
+
+                # If test inferior, we already know there is no change
+                if R <= tau_I:
+                    return False, R, tau_I, error_II
+                #elif error_II < self.threshold:
+                    #return True, R, tau_I, error_II
+                else:
+                    return True, R, tau_I, error_II
+            else:
+                #return R >= self.delta , R #, tau_I
+                return R >= tau_I, R, tau_I, error_II
+
     def change_point_lr(self, strat):
         
         # Compute corresponding type 2 error
@@ -869,27 +978,38 @@ class gp_bandit_finance:
 
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         gp.change_data(S_1, y_1)
-        likelihood, model = gp.model.likelihood, gp.model
+        likelihood_gp, model = gp.model.likelihood, gp.model
         model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             latent_f_tilde = model(S_2)
-            observed_pred = likelihood(latent_f_tilde)
+            observed_pred = likelihood_gp(latent_f_tilde)
         mu_tilde, K_tilde = observed_pred.mean, observed_pred.covariance_matrix
-        v_h0 = K_tilde + (likelihood.noise**2)*torch.eye(self.size_window//2)
+        v_h0 = K_tilde + (likelihood_gp.noise**2)*torch.eye(self.size_window//2)
 
 
         # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
         gp.change_data(train_x, train_y)
-
-        likelihood = gpytorch.likelihoods.GaussianLikelihood() 
-        model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood)
+        
+        #likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        #likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise                  = likelihood_gp.noise, 
+        #                                                                                learn_additional_noise = False) 
+        
+        #likelihood2 = gp.model.likelihood # TODO: VERIFY 
+        likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor([0.01]), 
+                                                                                        learn_additional_noise=True) 
+        #likelihood.noise = gp.model.likelihood.noise
+        #likelihood              = gpytorch.likelihoods.GaussianLikelihood()
+        #likelihood.noise        = 0.0001
+        #likelihood              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor(0.0001), 
+        #                                                                            learn_additional_noise=True) 
+        model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood_alt)
         model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             latent_f_star = model(S_2)
-            observed_pred = likelihood(latent_f_star)
+            observed_pred = likelihood_alt(latent_f_star)
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         mu, K = observed_pred.mean, observed_pred.covariance_matrix
-        v_h1  = K + (likelihood.noise**2)*torch.eye(self.size_window//2)
+        v_h1  = K + (likelihood_alt.noise**2)*torch.eye(self.size_window//2)
 
         # Compute delta Vh0 Vh1
         v_h0_inv = torch.inverse(v_h0)
@@ -897,11 +1017,15 @@ class gp_bandit_finance:
         delta = v_h1_inv - v_h0_inv
         target_bis = y_2 - mu_tilde
 
-        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv))
+        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1)) + torch.log(torch.det(v_h0))
+        print('general GP noise: ', likelihood_gp.noise)
+        print('vh1:', K, likelihood_alt.noise**2)
+        print('v_h1_inv:', v_h1_inv)
         
-        
+        print('decompose: ', -y_2 @ v_h1_inv @ y_2, target_bis @ v_h0_inv @ target_bis, - torch.log(torch.det(v_h1)),torch.log(torch.det(v_h0)) )
+        # was - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv)) before
         # Conpute Threshold based on type 1 error
-        aux = v_h0 @ delta
+        aux   = v_h0 @ delta
         mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
 
         sum_lambda_0 = torch.trace(aux @ aux)
@@ -909,32 +1033,46 @@ class gp_bandit_finance:
         smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
         largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
 
-        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.delta)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.delta)*largest_eih0))
-    
+        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.delta_I)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.delta_I)*largest_eih0))
+
+        # compute error II prob
+        aux           = v_h1 @ delta
+
+        #mu_h1 = -torch.trace(aux)
+        mu_h1         = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
+        sum_lambda_1  = torch.trace(aux @ aux)
+        largest_eih1  = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
+        smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
+        largest_eih1  = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
+
         # If delta_I is specified, abide by it, otherwise try to compute one
-        if self.check_type_II:
-            #In case significant test compute equivalent second threshold
-            aux           = v_h1 @ delta
+        if self.force_threshold is not None:
+            error_II      = torch.max(torch.exp(-((mu_h1 - self.force_threshold)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - self.force_threshold)/(8*torch.tensor(largest_eih1))))) # = lambda 2            
 
-            #mu_h1 = -torch.trace(aux)
-            mu_h1         = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
-            sum_lambda_1  = torch.trace(aux @ aux)
-            largest_eih1  = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (self.size_window//2 - 1, self.size_window//2 - 1))
-            smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-            largest_eih1  = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
-            error_II      = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2
-
-            # If test inferior, we already know there is no change
-            if R <= tau_I:
-                return False, R, tau_I, error_II
-            #elif error_II < self.threshold:
-                #return True, R, tau_I, error_II
+            #print('I m forcing the threshold to ', self.force_threshold, ' and the LR stat is ', float(R), ' and tau_I is', float(tau_I))
+            if self.check_type_II:
+                return R >= self.force_threshold, R, tau_I, error_II
             else:
-                return True, R, tau_I, error_II
-        else:
-            #return R >= self.delta , R #, tau_I
-            return R >= tau_I, R, tau_I
+                return R >= self.force_threshold, R, tau_I, error_II
         
+        else:
+            error_II      = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2                    
+        
+            if self.check_type_II:
+                #In case significant test compute equivalent second threshold
+
+                # If test inferior, we already know there is no change
+                if R <= tau_I:
+                    return False, R, tau_I, error_II
+                #elif error_II < self.threshold:
+                    #return True, R, tau_I, error_II
+                else:
+                    return True, R, tau_I, error_II
+            else:
+                #return R >= self.delta , R #, tau_I
+                return R >= tau_I, R, tau_I, error_II
+            
+
     def change_point_adaga(self, strat):
         """
         This method applies ADAGA streaming GP regression.

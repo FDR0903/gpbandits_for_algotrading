@@ -80,7 +80,7 @@ class gp_bandit:
         likelihood.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             if self.verbose: print('test_x:', test_x)
-
+            
             f_pred = likelihood(model(test_x))
             if self.verbose: print('f_pred:', f_pred)
 
@@ -150,7 +150,6 @@ class gp_bandit:
                           facecolor='silver', hatch="ooo", edgecolor="gray")
 
         ax.grid(axis='both', color='gainsboro', linestyle='-', linewidth=0.5)
-
         
         if xlabel:
             ax.set_xlabel(xlabel)
@@ -268,6 +267,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module  = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+        
         self.reward_observation_times = []
         
     def forward(self, x):
