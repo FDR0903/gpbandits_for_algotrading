@@ -56,7 +56,7 @@ def get_LOB_data(data_path, asset_name, trade_date):
                                     engine    = 'c',
                                     index_col = 0,
                                     header    = None)
-     
+    
     LOB_data.index = LOB_messages.index
     LOB_data_columns = []
     for i in range(len(LOB_data.columns)//4): 

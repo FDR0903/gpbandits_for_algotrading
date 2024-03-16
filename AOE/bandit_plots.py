@@ -93,7 +93,7 @@ def reward_distribution_analysis(bandit_name, bandits, period_est, all_data, rew
 def regret_plots(strategies, regrets_to_plot, all_data, bandits, W=5.5, figure_name = None):
     rescale_plot(W=W)
     fig, (ax0, ax2) = plt.subplots(2, 1, sharex=True)
-
+    
     # Prices
     sub_mid_prices = all_data.mid_price
     sub_mid_prices = sub_mid_prices[((sub_mid_prices.index<=regrets_to_plot.index[-1]) & 

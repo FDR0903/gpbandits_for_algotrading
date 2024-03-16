@@ -1,17 +1,5 @@
-# gpbandits_for_algotrading
+Repository for the code of the paper 
 
-## Create virtual env & install dependencies
-```
-conda create -n exec python=3.7
-conda install numpy pandas matplotlib seaborn jupyterlab
-conda install botorch -c pytorch -c conda-forge
-conda install tensorflow=1.15.0
-pip install gpytorch==1.8.1
-pip install tqdm
-```
+Cartea, Álvaro and Drissi, Fayçal and Osselin, Pierre, Bandits for Algorithmic Trading with Signals (June 19, 2023). Available at SSRN: https://ssrn.com/abstract=4484004 or http://dx.doi.org/10.2139/ssrn.4484004 
 
-## Run
-Use the following code block to run a single trial:
-```
-python scripts/sim_synthetic.py
-```
+Run the notebook in Notebook/Example.ipynb to produce all the results of the paper. The MTGP-LR bandit is in AOE/gp_bandit_finance.py
