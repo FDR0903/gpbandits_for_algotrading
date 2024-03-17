@@ -17,8 +17,6 @@ from scipy.linalg import eigh
 from .gp_bandit import gp_bandit, ExactGPModel, mtgp_bandit, MultitaskGPModel
 from .gp_utils import Wasserstein_GP_mean
 
-from .inducing_points_version.core.adaptive_regionalization import AdaptiveRegionalization_bandit
-
 class mtgp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 
                             likelihood = gpytorch.likelihoods.GaussianLikelihood(),
@@ -71,7 +69,12 @@ class mtgp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
-            self.check_type_II = self.bandit_params['check_type_II']
+            
+            if 'check_type_II' in self.bandit_params:
+                self.check_type_II = self.bandit_params['check_type_II']
+            else:
+                self.check_type_II = False
+                
 
             if 'force_threshold' in self.bandit_params:
                 self.force_threshold = self.bandit_params['force_threshold']

@@ -2,7 +2,7 @@
 from email.policy import strict
 import os
 from this import d
-import scipy, pandas as pd
+import scipy
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import torch
 import gpytorch
@@ -16,8 +16,6 @@ from scipy.linalg import eigh
 
 from .gp_bandit import gp_bandit, ExactGPModel
 from .gp_utils import Wasserstein_GP_mean
-
-from .inducing_points_version.core.adaptive_regionalization import AdaptiveRegionalization_bandit
 
 class gp_bandit_finance:
     def __init__(self, strategies, bandit_algo='TS', 
@@ -42,11 +40,10 @@ class gp_bandit_finance:
         self.likelihood    = likelihood
         self.records       = {} # Traces of what happens
         self.reinit        = reinit
-        
-        
+
         # optimisation of computations
         self.last_change_point_test_results = {}
-        for algo_name in ('TS_NS', 'UCB_NS', 'TS_WAS', 'UCB_WAS', 'MAB_UCB', 'UCB_LR', 'RANDOM'):
+        for algo_name in ('TS_NS', 'UCB_NS', 'TS_WAS', 'UCB_WAS', 'MAB_UCB', 'UCB_LR', 'RANDOM', 'GREEDY'):
             self.last_change_point_test_results[algo_name] = {}
 
         # TODO Check if that's alright
@@ -60,13 +57,10 @@ class gp_bandit_finance:
                                                     train_y,
                                                     bandit_params = bandit_params,
                                                     training_iter = training_iter)
-            self.strat_gp_dict[strat].xs = []
-            self.strat_gp_dict[strat].ys = []
-            
         if bandit_algo == 'TS_NS':
-            self.size_buffer   = self.bandit_params['size_buffer']
+            self.size_buffer   = self.bandit_params['size_window']
         elif bandit_algo == 'UCB_NS':
-            self.size_buffer   = self.bandit_params['size_buffer']
+            self.size_buffer   = self.bandit_params['size_window']
             self.lamb          = self.bandit_params['lambda']
         elif bandit_algo == 'TS_WAS':
             self.size_window   = self.bandit_params['size_window']
@@ -79,22 +73,20 @@ class gp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.b             = self.bandit_params['threshold'] ### Must be even to divide last points by two
             self.lamb          = self.bandit_params['lambda']
-            self.size_buffer   = self.bandit_params['size_buffer']
+            self.size_buffer   = self.bandit_params['size_window']
             # records
             print('INTIALIZING!')
             self.records['was_distances'] = {s: [] for s in self.strat_gp_dict.keys() }
-        elif bandit_algo == 'TS_ADAGA':
-            self.size_window   = self.bandit_params['size_window']
-            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
-            self.size_buffer   = self.bandit_params['size_buffer']
-        elif bandit_algo == 'UCB_ADAGA':
+        elif bandit_algo == 'MAB_UCB':
             self.size_window   = self.bandit_params['size_window']
             self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
-            self.size_buffer   = self.bandit_params['size_buffer']
-        elif bandit_algo == 'MAB_UCB':
+            self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
+            for strat in self.strategies.keys():
+                self.strat_t[strat] = 0
+        elif bandit_algo == 'GREEDY':
             self.size_window   = self.bandit_params['size_window']
-            self.delta_I       = self.bandit_params['delta'] ### Bound on type 1 error
+            self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
             self.strat_t       = {} ### Dictionary of time since reset for ucb calculation
             for strat in self.strategies.keys():
@@ -110,7 +102,12 @@ class gp_bandit_finance:
             self.size_window   = self.bandit_params['size_window']
             self.delta_I       = self.bandit_params['delta_I'] ### Bound on type 1 error
             self.lamb          = self.bandit_params['lambda']
-            self.check_type_II = self.bandit_params['check_type_II']
+
+            if 'check_type_II' in self.bandit_params:
+                self.check_type_II = self.bandit_params['check_type_II']
+            else:
+                self.check_type_II = False
+                
             if 'force_threshold' in self.bandit_params:
                 self.force_threshold = self.bandit_params['force_threshold']
             else:
@@ -150,6 +147,15 @@ class gp_bandit_finance:
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
 
+        elif self.bandit_algo == 'GREEDY':
+            "Compute ucb for each gp and select best"
+            best_strat, best_ucb = "", -np.inf
+            for strat in self.strategies.keys():
+                ucb_strat = self.compute_greedy(strat, features)
+                if ucb_strat > best_ucb:
+                    best_strat, best_ucb = strat, ucb_strat
+
+
         elif self.bandit_algo == 'TS':
             "Compute ts for each gp and select best"
             best_strat, best_ts = "", -np.inf
@@ -174,20 +180,6 @@ class gp_bandit_finance:
                 if ucb_strat > best_ucb:
                     best_strat, best_ucb = strat, ucb_strat
 
-        elif self.bandit_algo == 'TS_ADAGA':
-            "Compute ts for each gp and select best"
-            best_strat, best_ts = "", -np.inf
-            for strat in self.strategies.keys():
-                ts_strat = self.compute_ts_ada(strat, features)
-                if ts_strat > best_ts:
-                    best_strat, best_ts = strat, ts_strat
-        elif self.bandit_algo == 'UCB_ADAGA':
-            "Compute ucb for each gp and select best"
-            best_strat, best_ucb = "", -np.inf
-            for strat in self.strategies.keys():
-                ucb_strat = self.compute_ucb_ada(strat, features)
-                if ucb_strat > best_ucb:
-                    best_strat, best_ucb = strat, ucb_strat
         elif self.bandit_algo == 'RANDOM':
             "Compute ts for each gp and select best"
             best_strat, best_ts = random.choice(list(self.strategies.keys())), -np.inf
@@ -216,18 +208,8 @@ class gp_bandit_finance:
                     best_strat, best_ucb = strat, ucb_strat
         else:
             best_strat = 'NOT IMPLEMENTED'
+        
         return best_strat
-
-    def update_pred_curve(self, model):
-        if len(model.ys) > 1:
-            xys  = pd.DataFrame( np.array(model.ys)+0., index=np.array(model.xs)+0.).groupby(np.array(model.xs)+0.).mean().reset_index().values 
-        else:
-            xys  = pd.DataFrame(np.array(model.ys)+0., index=np.array(model.xs)+0.).reset_index().values
-        print('updating the GP with curve')
-        print(xys)
-
-        model.model.set_train_data(torch.tensor(xys[:, 0]), 
-                                   torch.tensor(xys[:, 1]), strict=False)
 
     def update_data(self, features, strat, reward, retrain_hyperparameters = False):
         "One get reward, update data and retrain gp of the corresponding strat"
@@ -237,84 +219,55 @@ class gp_bandit_finance:
         
         #select feature
         x_new = features[self.strategies[strat]['contextual_params']['feature_name']]
+        y_new = reward
 
-        # round
-        x_new = float(round(x_new, self.strategies[strat]['contextual_params']['round'])) + 0.
-
-        # get reward
-        y_new = float(reward) + 0.
-
-        # update data list
-        model.xs += [x_new]
-        model.ys += [y_new]
-
-        # groupby values and average
-        self.update_pred_curve(model)
-
-        # the bandit is now eligible for change point detection because a new point has been added from "strat"
+        # the bandit is now eligible for change point detection
         if strat in self.last_change_point_test_results[self.bandit_algo].keys():
             if self.verbose: print('I am deleting the change point results of ', strat)
             self.last_change_point_test_results[self.bandit_algo].pop(strat, None)
 
-        # retrain hyperparameters if needed
+        #Add point to model
+        if self.bandit_algo == 'UCB_NS':
+            model.update_data_nst(x_new, y_new, self.size_buffer)
+
+        elif self.bandit_algo == 'TS_NS':
+            model.update_data_nst(x_new, y_new, self.size_buffer)
+
+        elif self.bandit_algo == 'UCB':
+            model.update_data(x_new, y_new)
+
+        elif self.bandit_algo == 'TS':
+            model.update_data(x_new, y_new)
+
+        elif self.bandit_algo == 'TS_WAS':
+            model.update_data_nst(x_new, y_new, self.size_buffer)
+#            model.update_data(x_new, y_new)
+
+        elif self.bandit_algo == 'UCB_WAS':
+            model.update_data_nst(x_new, y_new, self.size_buffer)
+            # model.update_data(x_new, y_new)
+
+        elif self.bandit_algo == 'MAB_UCB':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'GREEDY':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'MAB_TS':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'UCB_LR':
+            model.update_data(x_new, y_new)
+            # model.update_data(x_new, y_new)
+        elif self.bandit_algo == 'RANDOM':
+            # no need for points
+            best_strat = 'OK'
+        else:
+            best_strat = 'NOT IMPLEMENTED'
+        
         if retrain_hyperparameters:
             if self.bandit_algo not in ("RANDOM", "MAB_UCB", "MAB_TS"): #add exceptions here
                 model.train()
-
-        
-        if False:
-            x_train = self.train_inputs[0]
-            y_train = self.train_targets
-            x_train = torch.cat((x_train, torch.tensor([x_new]).reshape(1,1)))
-            y_train = torch.cat((y_train, torch.tensor([y_new])))
-            
-            self.set_train_data(x_train, y_train, strict=False)
-
-        
-            #Add point to model
-            if self.bandit_algo == 'UCB_NS':
-                model.update_data_nst(x_new, y_new, self.size_buffer)
-
-            elif self.bandit_algo == 'TS_NS':
-                model.update_data_nst(x_new, y_new, self.size_buffer)
-
-            elif self.bandit_algo == 'UCB':
-                model.update_data(x_new, y_new)
-
-            elif self.bandit_algo == 'TS':
-                model.update_data(x_new, y_new)
-
-            elif self.bandit_algo == 'TS_WAS':
-                model.update_data_nst(x_new, y_new, self.size_buffer)
-    #            model.update_data(x_new, y_new)
-
-            elif self.bandit_algo == 'UCB_WAS':
-                model.update_data_nst(x_new, y_new, self.size_buffer)
-                # model.update_data(x_new, y_new)
-
-            elif self.bandit_algo == 'TS_ADAGA':
-                model.update_data(x_new, y_new)
-    #            model.update_data(x_new, y_new)
-
-            elif self.bandit_algo == 'UCB_ADAGA':
-                model.update_data(x_new, y_new)
-                # model.update_data(x_new, y_new)
-            elif self.bandit_algo == 'MAB_UCB':
-                model.update_data(x_new, y_new)
-                # model.update_data(x_new, y_new)
-            elif self.bandit_algo == 'MAB_TS':
-                model.update_data(x_new, y_new)
-                # model.update_data(x_new, y_new)
-            elif self.bandit_algo == 'UCB_LR':
-                model.update_data(x_new, y_new)
-                # model.update_data(x_new, y_new)
-            elif self.bandit_algo == 'RANDOM':
-                # no need for points
-                best_strat = 'OK'
-            else:
-                best_strat = 'NOT IMPLEMENTED'
-        
-        
 
 #    def update_data_nst(self, features, strat, reward, size_buffer, retrain_hyperparameters = False):
 #        "One get reward, update data and retrain gp of the corresponding strat"#
@@ -339,6 +292,14 @@ class gp_bandit_finance:
         gp = self.strat_gp_dict[strat]
         t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
         return gp.compute_ucb(t_x)
+    
+    def compute_greedy(self, strat, features):
+        "Compute ucb for one strat"
+        if self.verbose: print('Computing UCB for strategy:', strat)
+
+        gp = self.strat_gp_dict[strat]
+        t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
+        return gp.compute_greedy(t_x)
     
     def compute_ts(self, strat, features):
         "Compute thompson sampling for one strat"
@@ -511,74 +472,6 @@ class gp_bandit_finance:
         return gp.compute_ucb(t_x)
     
 
-    def compute_ucb_ada(self, strat, features):
-        "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing UCB ADA for strategy:', strat)   
-
-        # First Compute the waser distance
-        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
-            gp = self.strat_gp_dict[strat]
-        
-            train_x = gp.model.train_inputs[0]
-            train_y = gp.model.train_targets
-            
-            if self.change_point_adaga(strat):
-                if self.reinit:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x = torch.zeros((0, 1), dtype=torch.float64),
-                                                        train_y = torch.zeros(0, dtype=torch.float64),
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-                else:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x       = train_x[(- self.size_window//2):],
-                                                        train_y       = train_y[(- self.size_window//2):],
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-
-                self.strat_gp_dict[strat].train()
-
-        gp = self.strat_gp_dict[strat]
-        t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
-
-        return gp.compute_ucb(t_x)
-    
-    def compute_ts_ada(self, strat, features):
-        "Compute thompson sampling for one strat with was check first"
-        if self.verbose: print('Computing thompson sampling ADA for strategy:', strat)   
-
-        # First Compute the waser distancde
-        #print('testing train target is', self.strat_gp_dict[strat].model.train_targets.shape[0], ' and window is ', self.size_window)
-        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
-            gp = self.strat_gp_dict[strat]
-        
-            train_x = gp.model.train_inputs[0]
-            train_y = gp.model.train_targets
-
-            if self.change_point_adaga(strat):
-                # update the gp
-                if self.reinit:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x = torch.zeros((0, 1), dtype=torch.float64),
-                                                        train_y = torch.zeros(0, dtype=torch.float64),
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-                else:
-                    self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                        self.bandit_algo,
-                                                        train_x       = train_x[(- self.size_window//2):],
-                                                        train_y       = train_y[(- self.size_window//2):],
-                                                        bandit_params = self.bandit_params,
-                                                        training_iter = self.training_iter)
-
-        gp = self.strat_gp_dict[strat]
-        t_x = torch.tensor([features[self.strategies[strat]['contextual_params']['feature_name']]]).double()
-        
-        return gp.compute_ts(t_x)
-
     def compute_ucb_mab(self, strat):
         "Compute ucb for one strat"
         if self.verbose: print('Computing UCB for strategy:', strat)
@@ -624,36 +517,30 @@ class gp_bandit_finance:
 
     def compute_ucb_lr(self, strat, features):
         "Compute UCB for one strat with "
-        if self.verbose: print('* Computing UCB LR for strategy:', strat)   
-        
+        if self.verbose: print('Computing UCB LR for strategy:', strat)   
+
         # record the current lenght scale and noise values
         self.records['noise'][strat] += [self.strat_gp_dict[strat].model.likelihood.noise  ]
         self.records['lengthscale'][strat] += [ self.strat_gp_dict[strat].model.covar_module.base_kernel.lengthscale]
         
         # First Compute the LR stat
-        if len(self.strat_gp_dict[strat].xs) > self.size_window:
-            if self.verbose: print('Testing for change point with LR')
+        if self.strat_gp_dict[strat].model.train_targets.shape[0] > self.size_window:
             gp = self.strat_gp_dict[strat]
-            #train_x = gp.model.train_inputs[0]
-            #train_y = gp.model.train_targets
+            train_x = gp.model.train_inputs[0]
+            train_y = gp.model.train_targets
             
             if strat in self.last_change_point_test_results[self.bandit_algo].keys():
                 # it means no point has been added or reint has been done, so no need to redo test
                 b_changepoint = self.last_change_point_test_results[self.bandit_algo][strat]
-                if self.verbose: print('Test result:',  b_changepoint.item())
             else:
-                b_changepoint, lr_statistic, tau_I, delta_II = self.change_point_lr(strat) #, tau_I 
-                self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint
-                self.records['lr_statistic'][strat] += [ (lr_statistic, tau_I, delta_II) ]
-                if self.verbose: print('Test result: LR = ', lr_statistic.item(), " Thresold = ", tau_I.item(), " HypTest result =", b_changepoint.item())
-            
-            if self.verbose:
-                print('Plotting the GPs from both sub-windows')
-                posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2,\
-                            lower1, upper1, lower2, upper2 = self.posterior_sliding_window_covar(strat, n_test=30)
-
-                if (posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2) != (None, None, None, None):
-                    self.plot_change_point(strat, posterior_mean_1, posterior_mean_2, lower1, upper1, lower2, upper2, n_test=30)
+                try:
+                    b_changepoint, lr_statistic, tau_I, delta_II = self.change_point_lr(strat) #, tau_I 
+                    if self.verbose: print('I am storing the change point test results for ', strat, ' with LR')
+                    self.last_change_point_test_results[self.bandit_algo][strat] =  b_changepoint
+                    self.records['lr_statistic'][strat] += [ (lr_statistic, tau_I, delta_II) ]
+                except Exception as e:
+                    print('Error while compute LR statistic:', str(e))
+                    b_changepoint, lr_statistic, tau_I, delta_II = False, None,  None,  None
 
             if b_changepoint:
                 if self.reinit:
@@ -663,21 +550,15 @@ class gp_bandit_finance:
                                                         train_y = torch.zeros(0, dtype=torch.float64),
                                                         bandit_params = self.bandit_params,
                                                         training_iter = self.training_iter)
-                    self.strat_gp_dict[strat].xs = []
-                    self.strat_gp_dict[strat].ys = []
-                else:
-                    xs, ys = self.strat_gp_dict[strat].xs, self.strat_gp_dict[strat].ys
 
+                else:
                     self.strat_gp_dict[strat] = gp_bandit(self.likelihood,
-                                                            self.bandit_algo,
-                                                            train_x       = torch.zeros((0, 1), dtype=torch.float64),
-                                                            train_y       = torch.zeros(0, dtype=torch.float64),
-                                                            bandit_params = self.bandit_params,
-                                                            training_iter = self.training_iter)
-                    
-                    self.strat_gp_dict[strat].xs = xs[(-self.size_window//2):]
-                    self.strat_gp_dict[strat].ys = ys[(-self.size_window//2):]
-                    self.update_pred_curve(self.strat_gp_dict[strat])
+                                                        self.bandit_algo,
+                                                        train_x       = train_x[(- self.size_window//2):],
+                                                        train_y       = train_y[(- self.size_window//2):],
+                                                        bandit_params = self.bandit_params,
+                                                        training_iter = self.training_iter)
+
                     self.strat_gp_dict[strat].train() # train only if there are point
 
                 # remove last test
@@ -777,89 +658,7 @@ class gp_bandit_finance:
 
         return posterior_mean_1, lower1, upper1, posterior_mean_2, lower2, upper2
 
-
-
     def posterior_sliding_window_covar(self, strat, n_test = 30, lv = -1, uv = 1):
-        """return posterior mean and confidence region over window
-        - Create a new gp model for the posterior and optimize hyperparameters
-        """
-        gp = self.strat_gp_dict[strat]
-        
-        #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
-        xs_1, xs_2 = gp.xs[(-self.size_window):(- self.size_window//2)], gp.xs[(-self.size_window//2):]
-        ys_1, ys_2 = gp.ys[(-self.size_window):(- self.size_window//2)], gp.ys[(-self.size_window//2):]
-
-        try:
-            if len(xs_1) + len(xs_2) < self.size_window:
-                return None, None, None, None, None, None, None, None
-        except Exception as e:
-            #self.size_window = len(xs_1)
-            if len(xs_1) < self.size_window:
-                return None, None, None, None, None, None, None, None
-        
-        # groupby values and average
-        xys_1  = pd.DataFrame(ys_1, index=xs_1).groupby(xs_1).mean().reset_index().values
-        xys_2  = pd.DataFrame(ys_2, index=xs_2).groupby(xs_2).mean().reset_index().values
-        
-        S_1, S_2 = torch.tensor(xys_1[:, 0]), torch.tensor(xys_2[:, 0])
-        y_1, y_2 = torch.tensor(xys_1[:, 1]), torch.tensor(xys_2[:, 1])
-
-        
-        #bounds = torch.tensor([[-1.0], [1.0]])
-        #train_y_normalized =  normalize(train_y.detach(), bounds=bounds)
-
-        
-
-
-        ### Posterior mean and covariance for each dataset
-        #o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
-        #o_gaussLikelihood.noise = torch.tensor(0.0001)
-        
-        gp_1 = gp_bandit(self.likelihood,
-                        self.bandit_algo,
-                        S_1,
-                        y_1,
-                        bandit_params = self.bandit_params,
-                        training_iter = self.training_iter)
-
-        gp_1.train()
-
-        model, likelihood = gp_1.model, gp_1.model.likelihood
-        model.eval()
-        likelihood.eval()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            test_x = torch.linspace(lv, uv, n_test).double()
-            observed_pred = likelihood(model(test_x))
-            posterior_mean_1  = observed_pred.mean
-            posterior_covar_1 = observed_pred.covariance_matrix
-            lower1, upper1    = observed_pred.confidence_region()
-
-        ### Second posterior distribution
-        #o_gaussLikelihood = gpytorch.likelihoods.GaussianLikelihood()
-        #o_gaussLikelihood.noise = torch.tensor(0.0001)
-
-        gp_2 = gp_bandit(self.likelihood,
-                        self.bandit_algo,
-                        S_2,
-                        y_2,
-                        bandit_params = self.bandit_params,
-                        training_iter = self.training_iter)
-
-        gp_2.train()
-
-        model, likelihood = gp_2.model, gp_2.model.likelihood
-        model.eval()
-        likelihood.eval()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            test_x = torch.linspace(lv, uv, n_test).double()
-            observed_pred     = likelihood(model(test_x))
-            posterior_mean_2  = observed_pred.mean
-            posterior_covar_2 = observed_pred.covariance_matrix
-            lower2, upper2    = observed_pred.confidence_region()
-
-        return posterior_mean_1, posterior_covar_1, posterior_mean_2, posterior_covar_2, lower1, upper1, lower2, upper2
-
-    def OLDOLD_posterior_sliding_window_covar(self, strat, n_test = 30, lv = -1, uv = 1):
         """return posterior mean and confidence region over window
         - Create a new gp model for the posterior and optimize hyperparameters
         """
@@ -958,63 +757,51 @@ class gp_bandit_finance:
         # if True:
         #  HERE : plot both 
         if self.verbose:
-            self.plot_change_point(strat, posterior_mean_1, posterior_mean_2, lower1, upper1, lower2, upper2)
+            print(f'** performing change point test for strategy : {strat} **')
+            print('Distance: ', round(d, 5), ' Threshold:', self.b )
+    
+            train_x = self.strat_gp_dict[strat].model.train_inputs[0]
+            train_y = self.strat_gp_dict[strat].model.train_targets
+            
+            #bounds = torch.tensor([[-1.0], [1.0] ])
+            #train_y_normalized =  normalize(train_y.detach(), bounds=bounds)
+
+            train_x_1 = train_x[(-self.size_window//2):]
+            train_y_1 = train_y[(-self.size_window//2):]
+            train_x_2 = train_x[(-self.size_window):(- self.size_window//2)]
+            train_y_2 = train_y[(-self.size_window):(- self.size_window//2)]
+
+            print('Average performance GP1:', train_y_1.mean())
+            print('Average performance GP2:', train_y_2.mean())
+
+            test_x = torch.linspace(train_x.min().item(), train_x.max().item(), 100).double()
+            f, (ax1, ax2) = plt.subplots(1, 2, sharex=True)
+
+            for ax in (ax1, ax2):
+                ax.plot(test_x.numpy(), posterior_mean_1.numpy(), 'k', label="window_1")
+                ax.plot(train_x_1.numpy(), train_y_1.numpy(), 'k*')
+
+                ax.plot(test_x.numpy(), posterior_mean_2.numpy(), 'b', label="window_2")
+                ax.plot(train_x_2.numpy(), train_y_2.numpy(), 'b*')
+                #ax.set_title(f"Strategy: " + strat +  f". Wasserstein distance: distance {d}")
+
+                ax.yaxis.tick_right()
+                ax.yaxis.set_label_position("left")
+                ax.grid(axis='both',  linestyle='-', linewidth=0.5)
+                ax.set_axisbelow(True)        
+                ax.set_ylabel('Reward in ticks')
+                ax.set_xlabel(strat)
+                ax.legend(['GP1', '', 'GP2', ''], 
+                        handlelength=0.2, framealpha=0.2, loc='best', ncol=2)
+            ax1.fill_between(test_x.numpy(), lower1.detach().numpy(), upper1.detach().numpy(), alpha=0.4, color='k')
+            ax1.fill_between(test_x.numpy(), lower2.detach().numpy(), upper2.detach().numpy(), alpha=0.4, color='darkred')
+            plt.tight_layout()
+            plt.show()
 
         return (d > self.b), d
     
-    def plot_change_point(self, strat, posterior_mean_1, posterior_mean_2, lower1, upper1, lower2, upper2, n_test=30):
-        #print(f'** performing change point test for strategy : {strat} **')
-        #print('Distance: ', round(d, 5), ' Threshold:', self.b )
-        gp = self.strat_gp_dict[strat]
-        train_x, train_y = gp.model.train_inputs[0], gp.model.train_targets
-
-        #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
-        xs_1, xs_2 = gp.xs[(-self.size_window):(- self.size_window//2)], gp.xs[(-self.size_window//2):]
-        ys_1, ys_2 = gp.ys[(-self.size_window):(- self.size_window//2)], gp.ys[(-self.size_window//2):]
-
-        # groupby values and average
-        xys_1  = pd.DataFrame(ys_1, index=xs_1).groupby(xs_1).mean().reset_index().values
-        xys_2  = pd.DataFrame(ys_2, index=xs_2).groupby(xs_2).mean().reset_index().values
-        
-        S_1, S_2 = torch.tensor(xys_1[:, 0]), torch.tensor(xys_2[:, 0])
-        y_1, y_2 = torch.tensor(xys_1[:, 1]), torch.tensor(xys_2[:, 1])
-
-        train_x = self.strat_gp_dict[strat].model.train_inputs[0]
-        train_y = self.strat_gp_dict[strat].model.train_targets
-
-        train_x_1 = S_1
-        train_y_1 = y_1
-        train_x_2 = S_2
-        train_y_2 = y_2
-
-        print('Average performance GP1:', train_y_1.mean())
-        print('Average performance GP2:', train_y_2.mean())
-
-        test_x = torch.linspace(train_x.min().item(), train_x.max().item(), n_test).double()
-        f, (ax1, ax2) = plt.subplots(1, 2, sharex=True)
-
-        for ax in (ax1, ax2):
-            ax.plot(test_x.numpy(), posterior_mean_1.numpy(), 'k', label="window_1")
-            ax.plot(train_x_1.numpy(), train_y_1.numpy(), 'k*')
-
-            ax.plot(test_x.numpy(), posterior_mean_2.numpy(), 'b', label="window_2")
-            ax.plot(train_x_2.numpy(), train_y_2.numpy(), 'b*')
-            #ax.set_title(f"Strategy: " + strat +  f". Wasserstein distance: distance {d}")
-
-            ax.yaxis.tick_right()
-            ax.yaxis.set_label_position("left")
-            ax.grid(axis='both',  linestyle='-', linewidth=0.5)
-            ax.set_axisbelow(True)        
-            ax.set_ylabel('Reward in ticks')
-            ax.set_xlabel(strat)
-            ax.legend(['GP1', '', 'GP2', ''], 
-                    handlelength=0.2, framealpha=0.2, loc='best', ncol=2)
-        ax1.fill_between(test_x.numpy(), lower1.detach().numpy(), upper1.detach().numpy(), alpha=0.4, color='k')
-        ax1.fill_between(test_x.numpy(), lower2.detach().numpy(), upper2.detach().numpy(), alpha=0.4, color='darkred')
-        plt.tight_layout()
-        plt.show()
-
-    def change_point_lr_old(self, strat):
+    
+    def change_point_lr(self, strat):
         
         # Compute corresponding type 2 error
         # Compute Likelihood ratio test
@@ -1029,7 +816,7 @@ class gp_bandit_finance:
         y_1, y_2 = train_y[(-self.size_window):(- self.size_window//2)], train_y[(-self.size_window//2):]
 
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data( torch.tensor(S_1), torch.tensor(y_1))
+        gp.change_data(S_1, y_1)
         likelihood_gp, model = gp.model.likelihood, gp.model
         model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
@@ -1042,22 +829,16 @@ class gp_bandit_finance:
         # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
         gp.change_data(train_x, train_y)
         
-        #likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise  = likelihood_gp.noise, 
-                                                                                        learn_additional_noise = False) 
-        #likelihood2 = gp.model.likelihood # TODO: VERIFY 
-        #likelihood              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor(0.0001), 
-        #                                                                            learn_additional_noise=True) 
-        #likelihood.noise = gp.model.likelihood.noise
-        #likelihood              = gpytorch.likelihoods.GaussianLikelihood()
-        #likelihood.noise        = 0.0001
-        #likelihood              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor(0.0001), 
-        #                                                                            learn_additional_noise=True) 
+        likelihood_alt = gpytorch.likelihoods.GaussianLikelihood(noise=0.01)
+        #likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor([0.01]), 
+        #                                                                                learn_additional_noise=False) 
+
         model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood_alt)
         model.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             latent_f_star = model(S_2)
             observed_pred = likelihood_alt(latent_f_star)
+
         # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
         mu, K = observed_pred.mean, observed_pred.covariance_matrix
         v_h1  = K + (likelihood_alt.noise**2)*torch.eye(self.size_window//2)
@@ -1068,8 +849,8 @@ class gp_bandit_finance:
         delta = v_h1_inv - v_h0_inv
         target_bis = y_2 - mu_tilde
 
-        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv))
-        # was - torch.log(torch.det(v_h1_inv)) + torch.log(torch.det(v_h0_inv)) before
+        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis # the real LR stat is R - torch.log(torch.det(v_h1)) + torch.log(torch.det(v_h0))
+
         # Conpute Threshold based on type 1 error
         aux   = v_h0 @ delta
         mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
@@ -1117,138 +898,4 @@ class gp_bandit_finance:
             else:
                 #return R >= self.delta , R #, tau_I
                 return R >= tau_I, R, tau_I, error_II
-
-    def change_point_lr(self, strat):
-        
-        # Compute corresponding type 2 error
-        # Compute Likelihood ratio test
-        # If ratio test big enough reinitialize
-        gp = self.strat_gp_dict[strat]
-        train_x, train_y = gp.model.train_inputs[0], gp.model.train_targets
-        if len(gp.xs) < self.size_window:
-            return False
-
-        #train_x, test_x = gp.model.train_inputs[0][:self.p], gp.model.train_inputs[0][self.p:self.P]
-        xs_1, xs_2 = gp.xs[(-self.size_window):(- self.size_window//2)], gp.xs[(-self.size_window//2):]
-        ys_1, ys_2 = gp.ys[(-self.size_window):(- self.size_window//2)], gp.ys[(-self.size_window//2):]
-        
-        # groupby values and average
-        xys_1  = pd.DataFrame(ys_1, index=xs_1).groupby(xs_1).mean().reset_index().values
-        try:
-            xys_2  = pd.DataFrame(ys_2, index=xs_2).groupby(xs_2).mean().reset_index().values
-        except Exception as e:
-            #display(pd.DataFrame(ys_1, index=xs_1).groupby(xs_1).mean())
-            #display(pd.DataFrame(ys_2, index=xs_2))
-            #display(pd.DataFrame(ys_2, index=xs_2).groupby(xs_2).mean())
-            #print(np.shape(xs_2))
-            #print(str(e))    
-            xys_2  = pd.DataFrame(ys_2, index=xs_2).groupby(xs_2).mean().reset_index().values
-        S_1, S_2 = torch.tensor(xys_1[:, 0]), torch.tensor(xys_2[:, 0])
-        y_1, y_2 = torch.tensor(xys_1[:, 1]), torch.tensor(xys_2[:, 1])
-        
-        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data(S_1, y_1)
-        likelihood_gp, model = gp.model.likelihood, gp.model
-        model.eval()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            latent_f_tilde = model(S_2)
-            observed_pred = likelihood_gp(latent_f_tilde)
-        mu_tilde, K_tilde = observed_pred.mean, observed_pred.covariance_matrix
-
-        identity_l = len(S_2)
-        I_identity = torch.eye(identity_l)
-        v_h0 = K_tilde + (likelihood_gp.noise**2)*I_identity
-
-
-        # Compute K** mu** from covariance eval model(), K** from the prior model in train with changed train dataset
-        gp.change_data(train_x, train_y)
-        
-        likelihood_alt = gpytorch.likelihoods.GaussianLikelihood(noise=0.01)
-        #likelihood_alt              = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.tensor([0.01]), 
-        #                                                                                learn_additional_noise=False) 
-
-        model      = ExactGPModel(torch.zeros((0, 1), dtype=torch.float64), torch.zeros(0, dtype=torch.float64), likelihood_alt)
-        model.eval()
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            latent_f_star = model(S_2)
-            observed_pred = likelihood_alt(latent_f_star)
-
-        # Compute Ktilde Mutilde from covariance eval model(), K** from the prior model in train with changed train dataset
-        mu, K = observed_pred.mean, observed_pred.covariance_matrix
-        v_h1  = K + (likelihood_alt.noise**2)*I_identity
-
-        # Compute delta Vh0 Vh1
-        v_h0_inv = torch.inverse(v_h0)
-        v_h1_inv = torch.inverse(v_h1)
-        delta = v_h1_inv - v_h0_inv
-        target_bis = y_2 - mu_tilde
-
-        R = -y_2 @ v_h1_inv @ y_2 + target_bis @ v_h0_inv @ target_bis # the real LR stat is R - torch.log(torch.det(v_h1)) + torch.log(torch.det(v_h0))
-
-        # Conpute Threshold based on type 1 error
-        aux   = v_h0 @ delta
-        mu_h0 = v_h0.shape[0] - mu_tilde @ v_h1_inv @ mu_tilde - torch.trace( v_h1_inv @ v_h0)
-
-        sum_lambda_0 = torch.trace(aux @ aux)
-        largest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (identity_l - 1, identity_l - 1))
-        smallest_eih0 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-        largest_eih0 = max(np.absolute(largest_eih0), np.absolute(smallest_eih0))
-
-        tau_I = mu_h0 + max(torch.sqrt(-8*np.log(self.delta_I)*(sum_lambda_0 + mu_tilde @ v_h1_inv @ v_h0 @ v_h1_inv @ mu_tilde)), torch.tensor(-8*np.log(self.delta_I)*largest_eih0))
-
-        # compute error II prob
-        aux           = v_h1 @ delta
-
-        #mu_h1 = -torch.trace(aux)
-        mu_h1         = -v_h1.shape[0] + mu_tilde @ v_h0_inv @ mu_tilde + torch.trace( v_h0_inv @ v_h1)
-        sum_lambda_1  = torch.trace(aux @ aux)
-        largest_eih1  = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (identity_l - 1, identity_l - 1))
-        smallest_eih1 = eigh(aux.detach().numpy(), eigvals_only=True, eigvals = (0, 0))
-        largest_eih1  = max(np.absolute(largest_eih1), np.absolute(smallest_eih1))
-
-        # If delta_I is specified, abide by it, otherwise try to compute one
-        if self.force_threshold is not None:
-            error_II      = torch.max(torch.exp(-((mu_h1 - self.force_threshold)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - self.force_threshold)/(8*torch.tensor(largest_eih1))))) # = lambda 2            
-
-            #print('I m forcing the threshold to ', self.force_threshold, ' and the LR stat is ', float(R), ' and tau_I is', float(tau_I))
-            if self.check_type_II:
-                return R >= self.force_threshold, R, tau_I, error_II
-            else:
-                return R >= self.force_threshold, R, tau_I, error_II
-        
-        else:
-            error_II      = torch.max(torch.exp(-((mu_h1 - tau_I)**2)/(8*(sum_lambda_1 + mu_tilde @ v_h0_inv @ v_h1 @ v_h0_inv @ mu_tilde))), torch.exp(-((mu_h1 - tau_I)/(8*torch.tensor(largest_eih1))))) # = lambda 2                    
-
-            if self.check_type_II:
-                #In case significant test compute equivalent second threshold
-
-                # If test inferior, we already know there is no change
-                if R <= tau_I:
-                    return False, R, tau_I, error_II
-                #elif error_II < self.threshold:
-                    #return True, R, tau_I, error_II
-                else:
-                    return True, R, tau_I, error_II
-            else:
-                #return R >= self.delta , R #, tau_I
-                return R >= tau_I, R, tau_I, error_II
             
-
-    def change_point_adaga(self, strat):
-        """
-        This method applies ADAGA streaming GP regression.
-        """
-        gp = self.strat_gp_dict[strat]
-
-        #train_x = gp.model.train_inputs[0][(-self.size_window):(- self.size_window//2)]
-        train_x = gp.model.train_inputs[0][(-self.size_window):]
-        train_y = gp.model.train_targets[(-self.size_window):]
-        if train_y.shape[0] < self.size_window:
-            return False
-        
-        ada = AdaptiveRegionalization_bandit(train_x, train_y, self.delta, self.size_window, n_ind_pts=10, kern="RBF")
-        
-        return ada.regionalize()
-
-        
-
